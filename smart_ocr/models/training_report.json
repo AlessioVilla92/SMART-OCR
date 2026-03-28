@@ -1,68 +1,69 @@
 {
-  "timestamp": "2026-03-28T03:23:16.271363",
-  "dataset_size": 28524,
+  "timestamp": "2026-03-29T00:43:34.931159",
+  "dataset_size": 19500,
+  "total_available": 31404,
   "classes": [
     "cerchio",
     "x_rossa",
     "vuoto"
   ],
-  "cv_accuracy_mean": 0.9863333333333333,
-  "cv_accuracy_std": 0.002290075204975686,
+  "cv_accuracy_mean": 0.9851,
+  "cv_accuracy_std": 0.003,
   "cv_scores_per_fold": [
-    0.9846666666666667,
-    0.9886666666666667,
-    0.9876666666666667,
-    0.9826666666666667,
-    0.988
+    0.9858,
+    0.9822,
+    0.9903,
+    0.9819,
+    0.9853
   ],
   "classification_report": {
     "cerchio": {
-      "precision": 0.9967395877156079,
+      "precision": 0.9976923076923077,
       "recall": 1.0,
-      "f1-score": 0.9983671319462734,
-      "support": 9477.0
+      "f1-score": 0.9988448209472468,
+      "support": 6485.0
     },
     "x_rossa": {
       "precision": 1.0,
       "recall": 1.0,
       "f1-score": 1.0,
-      "support": 8500.0
+      "support": 6500.0
     },
     "vuoto": {
       "precision": 1.0,
-      "recall": 0.9970607755759932,
-      "f1-score": 0.9985282248492617,
-      "support": 10547.0
+      "recall": 0.9976976208749041,
+      "f1-score": 0.9988474836726854,
+      "support": 6515.0
     },
-    "accuracy": 0.9989131959052027,
+    "accuracy": 0.9992307692307693,
     "macro avg": {
-      "precision": 0.9989131959052027,
-      "recall": 0.999020258525331,
-      "f1-score": 0.998965118931845,
-      "support": 28524.0
+      "precision": 0.9992307692307693,
+      "recall": 0.9992325402916347,
+      "f1-score": 0.999230768206644,
+      "support": 19500.0
     },
     "weighted avg": {
-      "precision": 0.9989167393346241,
-      "recall": 0.9989131959052027,
-      "f1-score": 0.9989132834434159,
-      "support": 28524.0
+      "precision": 0.9992325443786982,
+      "recall": 0.9992307692307693,
+      "f1-score": 0.9992307702548944,
+      "support": 19500.0
     }
   },
   "confusion_matrix": [
     [
-      9477,
+      6485,
       0,
-      31
+      15
     ],
     [
       0,
-      8500,
+      6500,
       0
     ],
     [
       0,
       0,
-      10516
+      6500
     ]
   ]
 }
