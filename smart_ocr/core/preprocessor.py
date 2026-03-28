@@ -140,46 +140,53 @@ def deskew(gray: np.ndarray) -> Tuple[np.ndarray, float]:
 def find_document_corners(gray: np.ndarray) -> Optional[np.ndarray]:
     """
     Trova i 4 angoli del documento nel frame fotografico.
-    Usa Canny + findContours per rilevare il rettangolo del foglio.
+    Strategia multi-livello:
+      1. Canny + contorni con epsilon crescente (0.02 → 0.08)
+      2. Fallback: soglia Otsu + morphology + contorni
 
     Returns: array shape (4,2) con angoli [TL, TR, BR, BL] o None se non trovato
     """
-    # Blur leggero per ridurre rumore sui bordi
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
+    h, w = gray.shape
+    min_area = (w * h) * 0.1
 
-    # Canny con soglie automatiche (metodo Otsu)
+    # --- Strategia 1: Canny + approxPolyDP con epsilon crescente ---
+    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     high_thresh, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     low_thresh = high_thresh * 0.5
     edges = cv2.Canny(blurred, low_thresh, high_thresh)
-
-    # Dilata per connettere bordi discontinui
     kernel = np.ones((3, 3), np.uint8)
     edges = cv2.dilate(edges, kernel, iterations=1)
 
-    # Trova contorni
     contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours:
+        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+        for contour in contours:
+            if cv2.contourArea(contour) < min_area:
+                continue
+            peri = cv2.arcLength(contour, True)
+            for eps in [0.02, 0.04, 0.06, 0.08]:
+                approx = cv2.approxPolyDP(contour, eps * peri, True)
+                if len(approx) == 4:
+                    pts = approx.reshape(4, 2).astype(np.float32)
+                    return _order_points(pts)
 
-    if not contours:
-        return None
+    # --- Strategia 2: Soglia Otsu + morphology per foto con sfondo chiaro ---
+    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel_big = np.ones((5, 5), np.uint8)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_big, iterations=3)
 
-    # Ordina per area decrescente, prendi i più grandi
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
-
-    h, w = gray.shape
-    min_area = (w * h) * 0.1  # Il foglio deve occupare almeno 10% del frame
-
-    for contour in contours:
-        area = cv2.contourArea(contour)
-        if area < min_area:
-            continue
-
-        # Approssima poligono
-        peri = cv2.arcLength(contour, True)
-        approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
-
-        if len(approx) == 4:
-            pts = approx.reshape(4, 2).astype(np.float32)
-            return _order_points(pts)
+    contours2, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if contours2:
+        contours2 = sorted(contours2, key=cv2.contourArea, reverse=True)[:5]
+        for contour in contours2:
+            if cv2.contourArea(contour) < min_area:
+                continue
+            peri = cv2.arcLength(contour, True)
+            for eps in [0.02, 0.04, 0.06, 0.08]:
+                approx = cv2.approxPolyDP(contour, eps * peri, True)
+                if len(approx) == 4:
+                    pts = approx.reshape(4, 2).astype(np.float32)
+                    return _order_points(pts)
 
     return None
 
