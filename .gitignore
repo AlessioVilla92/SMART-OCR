@@ -15,12 +15,15 @@ smart_ocr/data/synthetic/
 smart_ocr/data/generated/
 smart_ocr/models/*.pkl
 
-# Images (test data)
-*.jpg
-*.jpeg
-*.png
+# Images (generated/temp only)
+smart_ocr/data/**/*.png
+smart_ocr/data/**/*.jpg
 *.heic
-!smart_ocr/templates/*.json
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
 
 # OS
 .DS_Store
