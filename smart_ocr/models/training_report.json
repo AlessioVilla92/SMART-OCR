@@ -1,0 +1,68 @@
+{
+  "timestamp": "2026-03-27T18:48:30.829070",
+  "dataset_size": 18000,
+  "classes": [
+    "cerchio",
+    "x_rossa",
+    "vuoto"
+  ],
+  "cv_accuracy_mean": 0.9873888888888889,
+  "cv_accuracy_std": 0.0009718253158075623,
+  "cv_scores_per_fold": [
+    0.9888888888888889,
+    0.9875,
+    0.9875,
+    0.9872222222222222,
+    0.9858333333333333
+  ],
+  "classification_report": {
+    "cerchio": {
+      "precision": 0.9956666666666667,
+      "recall": 1.0,
+      "f1-score": 0.9978286286955069,
+      "support": 5974.0
+    },
+    "x_rossa": {
+      "precision": 1.0,
+      "recall": 1.0,
+      "f1-score": 1.0,
+      "support": 6000.0
+    },
+    "vuoto": {
+      "precision": 1.0,
+      "recall": 0.9956853634251577,
+      "f1-score": 0.9978380176284717,
+      "support": 6026.0
+    },
+    "accuracy": 0.9985555555555555,
+    "macro avg": {
+      "precision": 0.9985555555555555,
+      "recall": 0.9985617878083858,
+      "f1-score": 0.9985555487746596,
+      "support": 18000.0
+    },
+    "weighted avg": {
+      "precision": 0.9985618148148149,
+      "recall": 0.9985555555555555,
+      "f1-score": 0.9985555623364516,
+      "support": 18000.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      5974,
+      0,
+      26
+    ],
+    [
+      0,
+      6000,
+      0
+    ],
+    [
+      0,
+      0,
+      6000
+    ]
+  ]
+}

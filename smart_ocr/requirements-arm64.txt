@@ -1,0 +1,10 @@
+# Su Apple Silicon installa OpenCV via conda-forge (vedi sezione 1)
+# Poi installa solo queste via pip:
+scikit-learn==1.8.0
+numpy==1.26.4
+scipy==1.13.0
+albumentations==2.0.8
+streamlit==1.32.0
+pandas==2.2.1
+Pillow==10.3.0
+joblib==1.4.0

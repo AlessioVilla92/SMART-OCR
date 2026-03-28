@@ -1,0 +1,11 @@
+venv/
+__pycache__/
+*.pyc
+*.pkl
+output/
+data/raw_cells/
+*.jpg
+*.jpeg
+*.png
+*.heic
+.DS_Store

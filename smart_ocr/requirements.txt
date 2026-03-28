@@ -1,0 +1,28 @@
+# Core image processing
+opencv-contrib-python==4.9.0.80
+
+# Machine Learning
+scikit-learn==1.8.0
+numpy==1.26.4
+scipy==1.13.0
+
+# Data augmentation per training (ATTENZIONE: NON aggiornare oltre 2.0.8 - diventa AGPL)
+albumentations==2.0.8
+
+# UI
+streamlit>=1.32.0
+streamlit-drawable-canvas>=0.9.3
+streamlit-image-coordinates>=0.4.0
+
+# Data handling
+pandas==2.2.1
+Pillow==10.3.0
+
+# Model persistence
+joblib==1.4.0
+
+# PDF text extraction (calibrazione automatica)
+pdfplumber>=0.11.0
+
+# Packaging
+pyinstaller==6.6.0
