@@ -1,69 +1,68 @@
 {
-  "timestamp": "2026-03-29T00:43:34.931159",
-  "dataset_size": 19500,
-  "total_available": 31404,
+  "timestamp": "2026-03-31T11:45:37.742575",
+  "dataset_size": 33370,
   "classes": [
     "cerchio",
     "x_rossa",
     "vuoto"
   ],
-  "cv_accuracy_mean": 0.9851,
-  "cv_accuracy_std": 0.003,
+  "cv_accuracy_mean": 0.9907401857956248,
+  "cv_accuracy_std": 0.0013178683504522614,
   "cv_scores_per_fold": [
-    0.9858,
-    0.9822,
-    0.9903,
-    0.9819,
-    0.9853
+    0.9890620317650585,
+    0.9920587353910698,
+    0.9899610428528619,
+    0.9901108780341624,
+    0.9925082409349716
   ],
   "classification_report": {
     "cerchio": {
-      "precision": 0.9976923076923077,
+      "precision": 0.9966276180333689,
       "recall": 1.0,
-      "f1-score": 0.9988448209472468,
-      "support": 6485.0
+      "f1-score": 0.9983109609743088,
+      "support": 11230.0
     },
     "x_rossa": {
       "precision": 1.0,
       "recall": 1.0,
       "f1-score": 1.0,
-      "support": 6500.0
+      "support": 10100.0
     },
     "vuoto": {
       "precision": 1.0,
-      "recall": 0.9976976208749041,
-      "f1-score": 0.9988474836726854,
-      "support": 6515.0
+      "recall": 0.996843853820598,
+      "f1-score": 0.9984194326595125,
+      "support": 12040.0
     },
-    "accuracy": 0.9992307692307693,
+    "accuracy": 0.9988612526221157,
     "macro avg": {
-      "precision": 0.9992307692307693,
-      "recall": 0.9992325402916347,
-      "f1-score": 0.999230768206644,
-      "support": 19500.0
+      "precision": 0.9988758726777895,
+      "recall": 0.9989479512735326,
+      "f1-score": 0.9989101312112738,
+      "support": 33370.0
     },
     "weighted avg": {
-      "precision": 0.9992325443786982,
-      "recall": 0.9992307692307693,
-      "f1-score": 0.9992307702548944,
-      "support": 19500.0
+      "precision": 0.9988650929132374,
+      "recall": 0.9988612526221157,
+      "f1-score": 0.9988613143830393,
+      "support": 33370.0
     }
   },
   "confusion_matrix": [
     [
-      6485,
+      11230,
       0,
-      15
+      38
     ],
     [
       0,
-      6500,
+      10100,
       0
     ],
     [
       0,
       0,
-      6500
+      12002
     ]
   ]
 }

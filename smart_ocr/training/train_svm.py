@@ -34,6 +34,7 @@ _PROJECT_ROOT = Path(__file__).parent.parent
 RAW_DIR = _PROJECT_ROOT / "data" / "raw_cells"
 SYNTHETIC_DIR = _PROJECT_ROOT / "data" / "synthetic"
 GENERATED_DIR = _PROJECT_ROOT / "data" / "generated"
+PDF_CELLS_DIR = _PROJECT_ROOT / "data" / "pdf_cells"
 MODEL_DIR = _PROJECT_ROOT / "models"
 MODEL_PATH = MODEL_DIR / "model.pkl"
 REPORT_PATH = MODEL_DIR / "training_report.json"
@@ -85,6 +86,18 @@ def load_dataset():
         gen_dir = GENERATED_DIR / class_name
         if gen_dir.exists():
             for img_path in gen_dir.glob("*.png"):
+                img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+                if img is not None:
+                    img = cv2.resize(img, CELL_SIZE)
+                    features = compute_hog_features(img)
+                    X.append(features)
+                    y.append(class_idx)
+                    images_loaded += 1
+
+        # Carica celle estratte dal PDF ufficiale
+        pdf_dir = PDF_CELLS_DIR / class_name
+        if pdf_dir.exists():
+            for img_path in pdf_dir.glob("*.png"):
                 img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
                 if img is not None:
                     img = cv2.resize(img, CELL_SIZE)
