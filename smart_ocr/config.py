@@ -55,10 +55,14 @@ class Config:
     HOG_CELL_SIZE = (8, 8)
     HOG_NBINS = 9
 
-    # === Classi (mapping unificato) ===
-    # Ordine SVM: cerchio=0, x_rossa=1, vuoto=2
-    CLASSES = {0: "cerchio", 1: "x_rossa", 2: "vuoto"}
-    CLASSES_INV = {"cerchio": 0, "x_rossa": 1, "vuoto": 2}
+    # === Classi (mapping binario) ===
+    # Classificazione binaria: segnato (qualsiasi mark) vs vuoto
+    CLASSES = {0: "segnato", 1: "vuoto"}
+    CLASSES_INV = {"segnato": 0, "vuoto": 1}
+
+    # Legacy 3-classi (per compatibilita con modelli vecchi)
+    CLASSES_LEGACY = {0: "cerchio", 1: "x_rossa", 2: "vuoto"}
+    CLASSES_LEGACY_INV = {"cerchio": 0, "x_rossa": 1, "vuoto": 2}
 
     # Output
     OUTPUT_CSV_SEPARATOR = ";"  # Punto e virgola per Excel italiano

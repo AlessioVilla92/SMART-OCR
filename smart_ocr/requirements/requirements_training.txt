@@ -1,0 +1,26 @@
+# Smart OCR — Dipendenze TRAINING (solo PC sviluppatore)
+# Richiede GPU (RTX 3070 consigliata)
+
+-r requirements_base.txt
+
+# Data augmentation (ATTENZIONE: versioni 2.1+ sono AGPL — NON aggiornare)
+albumentations==2.0.8
+
+# PyTorch + CUDA per training YOLOv8n (Mode B)
+torch>=2.3.0
+torchvision>=0.18.0
+
+# Ultralytics — AGPL-3.0
+# SOLO per training. NON includere nella distribuzione.
+# Il modello addestrato (.onnx) e tuo e puoi distribuirlo.
+ultralytics>=8.2.0
+
+# OpenCV contrib (ArUco markers se necessario)
+opencv-contrib-python>=4.9.0.80
+
+# Visualizzazione e analisi
+scikit-image>=0.23.0
+matplotlib>=3.9.0
+
+# YAML per data.yaml YOLO
+pyyaml>=6.0

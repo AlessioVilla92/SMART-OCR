@@ -1,0 +1,7 @@
+names:
+- segnato
+- vuoto
+nc: 2
+path: C:\Users\Admin\Documents\GitHub\SMART-OCR\smart_ocr\data\yolo_dataset
+train: train
+val: val

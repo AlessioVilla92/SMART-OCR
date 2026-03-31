@@ -40,8 +40,8 @@ TTA_CONFIDENCE_THRESHOLD = 0.90
 # Soglia ambiguita ensemble
 ENSEMBLE_AMBIGUITY_THRESHOLD = 0.60
 
-# Classi nell'ordine unificato
-CLASS_NAMES = ["cerchio", "x_rossa", "vuoto"]
+# Classi binarie nell'ordine unificato
+CLASS_NAMES = ["segnato", "vuoto"]
 
 
 def _tta_augmentations(cell: np.ndarray) -> List[np.ndarray]:
@@ -109,17 +109,17 @@ class EnsembleClassifier:
         return self._active_models
 
     def _get_svm_proba(self, cell: np.ndarray) -> Optional[np.ndarray]:
-        """Ottiene probabilita SVM [cerchio, x_rossa, vuoto]."""
+        """Ottiene probabilita SVM [segnato, vuoto]."""
         if self._svm is None:
             return None
         from core.classifier import compute_hog_features
         features = compute_hog_features(cell).reshape(1, -1)
         proba = self._svm._classifier.model.predict_proba(features)[0]
-        # SVM ordine: [cerchio=0, x_rossa=1, vuoto=2] — gia unificato
+        # SVM ordine: [segnato=0, vuoto=1] — gia unificato
         return proba
 
     def _get_yolo_proba(self, cell: np.ndarray) -> Optional[np.ndarray]:
-        """Ottiene probabilita YOLO calibrate [cerchio, x_rossa, vuoto]."""
+        """Ottiene probabilita YOLO calibrate [segnato, vuoto]."""
         if self._yolo is None:
             return None
 
@@ -135,7 +135,7 @@ class EnsembleClassifier:
         proba_yolo = self._yolo._softmax(scaled_logits)
 
         # Rimappa da ordine YOLO a ordine unificato
-        proba_unified = np.zeros(3)
+        proba_unified = np.zeros(len(CLASS_NAMES))
         for yolo_idx, unified_idx in self._yolo.yolo_to_unified.items():
             proba_unified[unified_idx] = proba_yolo[yolo_idx]
 
@@ -203,10 +203,10 @@ class EnsembleClassifier:
             cls, conf = self.predict_cell(cell_img)
             raw[col_label] = (cls, conf)
 
-        # Trova celle marcate
+        # Trova celle marcate (segnato = qualsiasi mark)
         marked = [
             col for col, (cls, conf) in raw.items()
-            if cls in ("cerchio", "x_rossa")
+            if cls == "segnato"
         ]
 
         flag = None

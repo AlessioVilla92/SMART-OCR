@@ -37,17 +37,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from config import Config
 
 
-CLASSES = ["cerchio", "x_rossa", "vuoto"]
+CLASSES = ["segnato", "vuoto"]
 CELL_SIZE = (64, 64)
 
-# Stessa CLAHE per-cella usata in grid_extractor.py e train_svm.py
-_cell_clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(2, 2))
-
+# Sorgente: dataset binario gia con CLAHE applicata
 SOURCE_DIRS = [
-    Config.DATA_DIR / "raw_cells",
-    Config.DATA_DIR / "synthetic",
-    Config.DATA_DIR / "generated",
-    Config.DATA_DIR / "pdf_cells",
+    Config.DATA_DIR / "binary_generated",
 ]
 
 
@@ -73,17 +68,6 @@ def collect_images() -> dict:
                     images[class_name].append(img_path)
 
     return dict(images)
-
-
-def _copy_with_clahe(src: Path, dst: Path):
-    """Carica immagine, applica CLAHE per-cella, salva in destinazione."""
-    img = cv2.imread(str(src), cv2.IMREAD_GRAYSCALE)
-    if img is None:
-        shutil.copy2(src, dst)
-        return
-    img = cv2.resize(img, CELL_SIZE)
-    img = _cell_clahe.apply(img)
-    cv2.imwrite(str(dst), img)
 
 
 def prepare_dataset(val_split: float = 0.20, seed: int = 42):
@@ -144,14 +128,14 @@ def prepare_dataset(val_split: float = 0.20, seed: int = 42):
             dst = output_dir / "train" / class_name / img_path.name
             if dst.exists():
                 dst = output_dir / "train" / class_name / f"{img_path.parent.parent.name}_{img_path.name}"
-            _copy_with_clahe(img_path, dst)
+            shutil.copy2(img_path, dst)
             stats["train"][class_name] += 1
 
         for img_path in val_images:
             dst = output_dir / "val" / class_name / img_path.name
             if dst.exists():
                 dst = output_dir / "val" / class_name / f"{img_path.parent.parent.name}_{img_path.name}"
-            _copy_with_clahe(img_path, dst)
+            shutil.copy2(img_path, dst)
             stats["val"][class_name] += 1
 
     # Genera data.yaml

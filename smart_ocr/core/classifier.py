@@ -5,11 +5,10 @@ Classificatore basato su HOG features + SVM.
 In produzione carica model.pkl pre-addestrato.
 NON usa AI in produzione.
 
-Classi:
-    0 = "cerchio" (numero cerchiato con penna, stile O)
-    1 = "x_rossa" (segno X rosso sopra il numero)
-    2 = "vuoto"   (nessuna marcatura)
-    3 = "ambiguo" (bassa confidence, richiede revisione umana)
+Classi binarie:
+    0 = "segnato" (qualsiasi marcatura: cerchio, X, tratto, annerimento, ecc.)
+    1 = "vuoto"   (nessuna marcatura)
+    "ambiguo" = bassa confidence, richiede revisione umana
 """
 
 import cv2
@@ -25,10 +24,8 @@ CELL_SIZE = (64, 64)
 # Soglia confidence sotto cui la cella è "ambigua"
 AMBIGUITY_THRESHOLD = 0.65
 
-# Etichette classi
-CLASS_LABELS = {0: "cerchio", 1: "x_rossa", 2: "vuoto", 3: "ambiguo"}
-CLASS_TO_VALUE = {"cerchio": None, "x_rossa": None, "vuoto": None}
-# Il mapping cerchio/x -> valore (0, 1, 2) avviene in scorer.py
+# Etichette classi binarie
+CLASS_LABELS = {0: "segnato", 1: "vuoto"}
 
 
 def compute_hog_features(cell: np.ndarray) -> np.ndarray:
@@ -105,8 +102,8 @@ class CBCLClassifier:
         predicted_class_idx = np.argmax(proba)
         confidence = proba[predicted_class_idx]
 
-        # Classi: 0=cerchio, 1=x_rossa, 2=vuoto
-        class_names = ["cerchio", "x_rossa", "vuoto"]
+        # Classi binarie: 0=segnato, 1=vuoto
+        class_names = ["segnato", "vuoto"]
         predicted_class = class_names[predicted_class_idx]
 
         if confidence < AMBIGUITY_THRESHOLD:
@@ -134,10 +131,10 @@ class CBCLClassifier:
         for col_label, cell_img in cells.items():
             raw[col_label] = self.predict_cell(cell_img)
 
-        # Trova le celle marcate (non vuote)
+        # Trova le celle marcate (segnato = qualsiasi mark)
         marked = [
             col for col, (cls, conf) in raw.items()
-            if cls in ("cerchio", "x_rossa")
+            if cls == "segnato"
         ]
 
         flag = None

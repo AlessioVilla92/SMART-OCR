@@ -31,15 +31,12 @@ from core.classifier import compute_hog_features
 
 # Percorsi (relativi al progetto, non alla cwd)
 _PROJECT_ROOT = Path(__file__).parent.parent
-RAW_DIR = _PROJECT_ROOT / "data" / "raw_cells"
-SYNTHETIC_DIR = _PROJECT_ROOT / "data" / "synthetic"
-GENERATED_DIR = _PROJECT_ROOT / "data" / "generated"
-PDF_CELLS_DIR = _PROJECT_ROOT / "data" / "pdf_cells"
+BINARY_DIR = _PROJECT_ROOT / "data" / "binary_generated"
 MODEL_DIR = _PROJECT_ROOT / "models"
 MODEL_PATH = MODEL_DIR / "model.pkl"
 REPORT_PATH = MODEL_DIR / "training_report.json"
 
-CLASSES = ["cerchio", "x_rossa", "vuoto"]
+CLASSES = ["segnato", "vuoto"]
 CELL_SIZE = (64, 64)
 
 # Stessa CLAHE per-cella usata in grid_extractor.py
@@ -62,34 +59,26 @@ def _load_and_normalize(img_path) -> np.ndarray:
 
 def load_dataset():
     """
-    Carica tutte le immagini da raw_cells + synthetic + generated + pdf_cells.
-    Applica CLAHE per-cella coerente con grid_extractor.py.
+    Carica dataset binario da binary_generated/segnato e binary_generated/vuoto.
+    Le immagini hanno gia CLAHE applicata dal generatore.
     Returns: (X numpy array, y numpy array, class_names list)
     """
     X = []
     y = []
 
-    source_dirs = [
-        ("reali", RAW_DIR),
-        ("sintetiche", SYNTHETIC_DIR),
-        ("generate", GENERATED_DIR),
-        ("pdf", PDF_CELLS_DIR),
-    ]
-
     for class_idx, class_name in enumerate(CLASSES):
         images_loaded = 0
-
-        for label, base_dir in source_dirs:
-            class_dir = base_dir / class_name
-            if not class_dir.exists():
-                continue
-            for img_path in class_dir.glob("*.png"):
-                img = _load_and_normalize(img_path)
-                if img is not None:
-                    features = compute_hog_features(img)
-                    X.append(features)
-                    y.append(class_idx)
-                    images_loaded += 1
+        class_dir = BINARY_DIR / class_name
+        if not class_dir.exists():
+            print(f"  ATTENZIONE: {class_dir} non trovata")
+            continue
+        for img_path in class_dir.glob("*.png"):
+            img = _load_and_normalize(img_path)
+            if img is not None:
+                features = compute_hog_features(img)
+                X.append(features)
+                y.append(class_idx)
+                images_loaded += 1
 
         print(f"  {class_name}: {images_loaded} immagini caricate")
 

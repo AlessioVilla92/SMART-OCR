@@ -1,0 +1,28 @@
+# Smart OCR — Dipendenze PRODUZIONE
+# Nessuna GPU richiesta. Include ONNX Runtime per Mode B.
+
+# Core image processing
+opencv-python>=4.9.0.80
+
+# Machine Learning (Mode A: HOG + SVM)
+scikit-learn>=1.8.0
+numpy>=1.26.4
+scipy>=1.13.0
+
+# ONNX Runtime (Mode B: YOLOv8n inferenza — MIT license)
+onnxruntime>=1.18.0
+
+# UI
+streamlit>=1.32.0
+streamlit-drawable-canvas>=0.9.3
+streamlit-image-coordinates>=0.4.0
+
+# Data handling
+pandas>=2.2.1
+Pillow>=10.3.0
+
+# Model persistence
+joblib>=1.4.0
+
+# PDF text extraction (calibrazione automatica)
+pdfplumber>=0.11.0
