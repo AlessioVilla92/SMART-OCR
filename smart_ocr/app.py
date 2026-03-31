@@ -22,6 +22,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).parent))
 
+from config import Config, ClassificationMode
 from core.preprocessor import preprocess_full_pipeline
 from core.grid_extractor import extract_all_cells, visualize_grid_overlay
 from core.classifier import get_classifier
@@ -41,10 +42,10 @@ st.set_page_config(
 inject_custom_css()
 
 
-def check_ready() -> str:
+def check_ready(selected_mode: ClassificationMode = ClassificationMode.MODE_A_SVM) -> str:
     """
     Verifica che il sistema sia pronto per l'analisi.
-    Returns: "svm" se modello SVM disponibile, "omr" se solo calibrazione, "none" se nulla
+    Returns: "svm", "yolo", "omr", o "none"
     """
     # Controlla calibrazione
     status = get_calibration_status()
@@ -56,7 +57,40 @@ def check_ready() -> str:
         )
         return "none"
 
-    # Controlla modello SVM (opzionale)
+    # Mode C: Ensemble (SVM + YOLO + TTA)
+    if selected_mode == ClassificationMode.MODE_C_ENSEMBLE:
+        if Config.svm_model_available() or Config.yolo_model_available():
+            try:
+                from pipeline.ensemble_classifier import EnsembleClassifier
+                ens = EnsembleClassifier()
+                models = ", ".join(ens.active_models)
+                st.success(f"Ensemble attivo con: {models}")
+                return "ensemble"
+            except Exception as e:
+                st.warning(f"⚠️ Errore caricamento Ensemble: {e}\nFallback a Mode A...")
+        else:
+            st.warning("⚠️ Nessun modello disponibile per Ensemble. Fallback a OMR.")
+
+    # Mode B: YOLO ONNX
+    if selected_mode == ClassificationMode.MODE_B_YOLO:
+        if Config.yolo_model_available():
+            try:
+                from pipeline.mode_b.yolo_classifier import YOLOClassifier
+                _test = YOLOClassifier()
+                return "yolo"
+            except Exception as e:
+                st.warning(f"⚠️ Errore caricamento YOLO: {e}")
+        else:
+            st.warning(
+                "⚠️ Modello YOLO ONNX non trovato.\n\n"
+                "**Per addestrare il modello AI:**\n"
+                "1. `python training/mode_b/prepare_yolo_dataset.py`\n"
+                "2. `python training/mode_b/train_yolo.py`\n"
+                "3. `python training/mode_b/export_onnx.py`\n\n"
+                "Fallback a Mode A (SVM)..."
+            )
+
+    # Mode A: SVM (o fallback da Mode B)
     classifier = get_classifier()
     if classifier.is_loaded:
         return "svm"
@@ -86,11 +120,23 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
         cells_dict = extract_all_cells(gray, page)
 
     with st.spinner(f"3/4 — Classificazione celle ({method.upper()})..."):
-        if method == "svm":
+        if method == "ensemble":
+            from pipeline.ensemble_classifier import EnsembleClassifier
+            ens_clf = EnsembleClassifier()
+            classification_results = {}
+            for item_id, item_cells in cells_dict.items():
+                classification_results[item_id] = ens_clf.predict_item_cells(item_cells)
+        elif method == "svm":
             classifier = get_classifier()
             classification_results = {}
             for item_id, item_cells in cells_dict.items():
                 classification_results[item_id] = classifier.predict_item_cells(item_cells)
+        elif method == "yolo":
+            from pipeline.mode_b.yolo_classifier import YOLOClassifier
+            yolo_clf = YOLOClassifier()
+            classification_results = {}
+            for item_id, item_cells in cells_dict.items():
+                classification_results[item_id] = yolo_clf.predict_item_cells(item_cells)
         else:
             classification_results = classify_all_items_omr(cells_dict)
 
@@ -167,6 +213,23 @@ def main():
         debug_mode = st.checkbox("Modalità debug", False)
 
         st.markdown("<div class='subtle-sep'></div>", unsafe_allow_html=True)
+
+        # Toggle Mode A / Mode B
+        st.markdown("### Modalità Riconoscimento")
+        mode_choice = st.radio(
+            "Motore di classificazione",
+            ["A — Classico (HOG + SVM)", "B — AI (YOLOv8n ONNX)", "C — Ensemble (SVM + YOLO + TTA)"],
+            index=2,
+            help="Mode A: robusto, no GPU. Mode B: AI fine-tuned. Mode C: ensemble di entrambi con TTA, massima accuratezza."
+        )
+        if "C" in mode_choice:
+            selected_mode = ClassificationMode.MODE_C_ENSEMBLE
+        elif "B" in mode_choice:
+            selected_mode = ClassificationMode.MODE_B_YOLO
+        else:
+            selected_mode = ClassificationMode.MODE_A_SVM
+
+        st.markdown("<div class='subtle-sep'></div>", unsafe_allow_html=True)
         st.markdown("### Stato sistema")
 
         calib_status = get_calibration_status()
@@ -176,11 +239,23 @@ def main():
         else:
             st.markdown(status_pill("📐 Non calibrato", "warn"), unsafe_allow_html=True)
 
-        classifier = get_classifier()
-        if classifier.is_loaded:
-            st.markdown(status_pill("🧠 SVM attivo", "ok"), unsafe_allow_html=True)
+        # Stato modelli — entrambi
+        svm_ok = Config.svm_model_available()
+        yolo_ok = Config.yolo_model_available()
+
+        if svm_ok:
+            st.markdown(status_pill("🧠 SVM (Mode A) disponibile", "ok"), unsafe_allow_html=True)
         else:
-            st.markdown(status_pill("🤖 Modalità OMR", "info"), unsafe_allow_html=True)
+            st.markdown(status_pill("🧠 SVM (Mode A) non trovato", "warn"), unsafe_allow_html=True)
+
+        if yolo_ok:
+            st.markdown(status_pill("🤖 YOLO ONNX (Mode B) disponibile", "ok"), unsafe_allow_html=True)
+        else:
+            st.markdown(status_pill("🤖 YOLO ONNX (Mode B) non trovato", "info"), unsafe_allow_html=True)
+
+        # Fallback OMR se nessun modello
+        if not svm_ok and not yolo_ok:
+            st.markdown(status_pill("📊 Fallback: OMR pixel-counting", "info"), unsafe_allow_html=True)
 
         st.markdown("<div class='subtle-sep'></div>", unsafe_allow_html=True)
         st.markdown(
@@ -199,7 +274,7 @@ def main():
     ])
 
     with tab_upload:
-        method = check_ready()
+        method = check_ready(selected_mode)
         if method == "none":
             return
 
@@ -222,7 +297,12 @@ def main():
 
         with col_right:
             if uploaded:
-                st.info(f"Metodo: **{method.upper()}** {'(pixel-counting)' if method == 'omr' else '(machine learning)'}")
+                method_desc = {
+                    "svm": "(HOG + SVM — Mode A)",
+                    "yolo": "(YOLOv8n ONNX — Mode B)",
+                    "omr": "(pixel-counting — fallback)"
+                }.get(method, "")
+                st.info(f"Metodo: **{method.upper()}** {method_desc}")
                 if st.button("🔍 Analizza Questionario", type="primary", use_container_width=True):
                     try:
                         report = process_uploaded_image(uploaded, page, method, debug=debug_mode)
