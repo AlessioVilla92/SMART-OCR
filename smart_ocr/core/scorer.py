@@ -37,7 +37,8 @@ CBCL_SUBSCALES = {
 ALL_ITEMS = (
     [str(i) for i in range(1, 56)] +
     ["56a", "56b", "56c", "56d", "56e", "56f", "56g", "56h"] +
-    [str(i) for i in range(57, 113)]
+    [str(i) for i in range(57, 113)] +
+    ["113a", "113b", "113c"]
 )
 
 

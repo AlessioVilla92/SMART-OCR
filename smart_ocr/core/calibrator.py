@@ -6,8 +6,9 @@ L'utente indica pochi punti di ancoraggio sull'immagine e il sistema
 calcola automaticamente le coordinate di tutte le 357 celle (119 item x 3 colonne).
 
 Struttura CBCL 6-18:
-- Pagina 4: 2 colonne di item (sx: 1-34, dx: 35-55 + 56a-56h)
-- Pagina 5: 2 colonne di item (sx: 57-90, dx: 91-112)
+- Pagina 4: 2 colonne di item (sx: 1-24, dx: 25-47)
+- Pagina 5: 2 colonne di item (sx: 48-55 + 56a-56h + 57-68, dx: 69-96)
+- Pagina 6: 1 colonna (97-112 + 113a/b/c)
 - Ogni item ha 3 celle di risposta (0, 1, 2) allineate orizzontalmente
 
 CALIBRAZIONE:
@@ -33,18 +34,33 @@ TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "cbcl_grid.json"
 CBCL_LAYOUT = {
     "page_4": {
         "left_column": {
-            "items": [str(i) for i in range(1, 30)],  # 1-29
+            "items": [str(i) for i in range(1, 25)],  # 1-24
         },
         "right_column": {
-            "items": [str(i) for i in range(30, 57)] + ["56a", "56b", "56c", "56d"],  # 30-56 + 56a-56d
+            "items": [str(i) for i in range(25, 48)],  # 25-47
         }
     },
     "page_5": {
         "left_column": {
-            "items": [str(i) for i in range(57, 91)],  # 57-90
+            "items": (
+                [str(i) for i in range(48, 56)]  # 48-55
+                + ["56a", "56b", "56c", "56d", "56e", "56f", "56g", "56h"]
+                + [str(i) for i in range(57, 69)]  # 57-68
+            ),
         },
         "right_column": {
-            "items": [str(i) for i in range(91, 113)],  # 91-112
+            "items": [str(i) for i in range(69, 97)],  # 69-96
+        }
+    },
+    "page_6": {
+        "left_column": {
+            "items": (
+                [str(i) for i in range(97, 113)]  # 97-112
+                + ["113a", "113b", "113c"]  # Item 113: 3 righe aperte
+            ),
+        },
+        "right_column": {
+            "items": [],  # Pagina a colonna singola
         }
     }
 }
