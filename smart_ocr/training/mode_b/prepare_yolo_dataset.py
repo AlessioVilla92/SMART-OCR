@@ -26,6 +26,8 @@ Uso:
 import shutil
 import random
 import yaml
+import cv2
+import numpy as np
 from pathlib import Path
 from collections import defaultdict
 import argparse
@@ -36,6 +38,11 @@ from config import Config
 
 
 CLASSES = ["cerchio", "x_rossa", "vuoto"]
+CELL_SIZE = (64, 64)
+
+# Stessa CLAHE per-cella usata in grid_extractor.py e train_svm.py
+_cell_clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(2, 2))
+
 SOURCE_DIRS = [
     Config.DATA_DIR / "raw_cells",
     Config.DATA_DIR / "synthetic",
@@ -66,6 +73,17 @@ def collect_images() -> dict:
                     images[class_name].append(img_path)
 
     return dict(images)
+
+
+def _copy_with_clahe(src: Path, dst: Path):
+    """Carica immagine, applica CLAHE per-cella, salva in destinazione."""
+    img = cv2.imread(str(src), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        shutil.copy2(src, dst)
+        return
+    img = cv2.resize(img, CELL_SIZE)
+    img = _cell_clahe.apply(img)
+    cv2.imwrite(str(dst), img)
 
 
 def prepare_dataset(val_split: float = 0.20, seed: int = 42):
@@ -124,17 +142,16 @@ def prepare_dataset(val_split: float = 0.20, seed: int = 42):
 
         for img_path in train_images:
             dst = output_dir / "train" / class_name / img_path.name
-            # Evita conflitti di nomi da sorgenti diverse
             if dst.exists():
                 dst = output_dir / "train" / class_name / f"{img_path.parent.parent.name}_{img_path.name}"
-            shutil.copy2(img_path, dst)
+            _copy_with_clahe(img_path, dst)
             stats["train"][class_name] += 1
 
         for img_path in val_images:
             dst = output_dir / "val" / class_name / img_path.name
             if dst.exists():
                 dst = output_dir / "val" / class_name / f"{img_path.parent.parent.name}_{img_path.name}"
-            shutil.copy2(img_path, dst)
+            _copy_with_clahe(img_path, dst)
             stats["val"][class_name] += 1
 
     # Genera data.yaml

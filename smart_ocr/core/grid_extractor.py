@@ -18,6 +18,11 @@ from typing import Dict, Tuple, Optional
 TEMPLATE_PATH = Path(__file__).parent.parent / "templates" / "cbcl_grid.json"
 CELL_SIZE = (64, 64)  # Dimensione standard cella per classificatore HOG
 
+# CLAHE per-cella: normalizza contrasto individuale di ogni cella.
+# clipLimit=1.5 (conservativo per non amplificare rumore su celle vuote)
+# tileGridSize=(2,2) su 64x64 = tile 32x32 (normalizzazione grossolana)
+_cell_clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(2, 2))
+
 
 class GridExtractionError(Exception):
     pass
@@ -74,6 +79,10 @@ def extract_cell(
 
     # Ridimensiona a dimensione standard per HOG
     cell_resized = cv2.resize(cell, CELL_SIZE, interpolation=cv2.INTER_AREA)
+
+    # Normalizzazione contrasto per-cella
+    cell_resized = _cell_clahe.apply(cell_resized)
+
     return cell_resized
 
 

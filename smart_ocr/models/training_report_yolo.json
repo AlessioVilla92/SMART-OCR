@@ -1,9 +1,9 @@
 {
-  "timestamp": "2026-03-31T13:49:44.344388",
+  "timestamp": "2026-03-31T17:13:57.571846",
   "model": "yolov8n-cls",
   "task": "classification",
   "dataset": "C:\\Users\\Admin\\Documents\\GitHub\\SMART-OCR\\smart_ocr\\data\\yolo_dataset",
-  "training_time_seconds": 1930.6,
+  "training_time_seconds": 2170.9,
   "class_names": {
     "0": "cerchio",
     "1": "vuoto",

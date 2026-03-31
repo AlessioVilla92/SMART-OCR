@@ -42,65 +42,50 @@ REPORT_PATH = MODEL_DIR / "training_report.json"
 CLASSES = ["cerchio", "x_rossa", "vuoto"]
 CELL_SIZE = (64, 64)
 
+# Stessa CLAHE per-cella usata in grid_extractor.py
+_cell_clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(2, 2))
+
 # Soglie minime per procedere al training
 MIN_SAMPLES_PER_CLASS = 30
 TARGET_ACCURACY = 0.88
 
 
+def _load_and_normalize(img_path) -> np.ndarray:
+    """Carica, ridimensiona e applica CLAHE per-cella (stessa di grid_extractor)."""
+    img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+    img = cv2.resize(img, CELL_SIZE)
+    img = _cell_clahe.apply(img)
+    return img
+
+
 def load_dataset():
     """
-    Carica tutte le immagini da raw_cells + synthetic.
+    Carica tutte le immagini da raw_cells + synthetic + generated + pdf_cells.
+    Applica CLAHE per-cella coerente con grid_extractor.py.
     Returns: (X numpy array, y numpy array, class_names list)
     """
     X = []
     y = []
 
+    source_dirs = [
+        ("reali", RAW_DIR),
+        ("sintetiche", SYNTHETIC_DIR),
+        ("generate", GENERATED_DIR),
+        ("pdf", PDF_CELLS_DIR),
+    ]
+
     for class_idx, class_name in enumerate(CLASSES):
         images_loaded = 0
 
-        # Carica immagini reali
-        real_dir = RAW_DIR / class_name
-        if real_dir.exists():
-            for img_path in real_dir.glob("*.png"):
-                img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
+        for label, base_dir in source_dirs:
+            class_dir = base_dir / class_name
+            if not class_dir.exists():
+                continue
+            for img_path in class_dir.glob("*.png"):
+                img = _load_and_normalize(img_path)
                 if img is not None:
-                    img = cv2.resize(img, CELL_SIZE)
-                    features = compute_hog_features(img)
-                    X.append(features)
-                    y.append(class_idx)
-                    images_loaded += 1
-
-        # Carica immagini sintetiche (augmented)
-        synth_dir = SYNTHETIC_DIR / class_name
-        if synth_dir.exists():
-            for img_path in synth_dir.glob("*.png"):
-                img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-                if img is not None:
-                    img = cv2.resize(img, CELL_SIZE)
-                    features = compute_hog_features(img)
-                    X.append(features)
-                    y.append(class_idx)
-                    images_loaded += 1
-
-        # Carica immagini generate (cell_generator + AI)
-        gen_dir = GENERATED_DIR / class_name
-        if gen_dir.exists():
-            for img_path in gen_dir.glob("*.png"):
-                img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-                if img is not None:
-                    img = cv2.resize(img, CELL_SIZE)
-                    features = compute_hog_features(img)
-                    X.append(features)
-                    y.append(class_idx)
-                    images_loaded += 1
-
-        # Carica celle estratte dal PDF ufficiale
-        pdf_dir = PDF_CELLS_DIR / class_name
-        if pdf_dir.exists():
-            for img_path in pdf_dir.glob("*.png"):
-                img = cv2.imread(str(img_path), cv2.IMREAD_GRAYSCALE)
-                if img is not None:
-                    img = cv2.resize(img, CELL_SIZE)
                     features = compute_hog_features(img)
                     X.append(features)
                     y.append(class_idx)
