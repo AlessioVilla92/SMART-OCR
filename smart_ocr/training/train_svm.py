@@ -33,7 +33,8 @@ from core.classifier import compute_hog_features
 _PROJECT_ROOT = Path(__file__).parent.parent
 BINARY_DIR = _PROJECT_ROOT / "data" / "binary_generated"
 MODEL_DIR = _PROJECT_ROOT / "models"
-MODEL_PATH = MODEL_DIR / "model.pkl"
+MODEL_PATH = MODEL_DIR / "svm_classifier.pkl"
+MODEL_PATH_LEGACY = MODEL_DIR / "model.pkl"
 REPORT_PATH = MODEL_DIR / "training_report.json"
 
 CLASSES = ["segnato", "vuoto"]
@@ -160,8 +161,9 @@ def train():
     print("Confusion Matrix:")
     print(cm)
 
-    # Salva modello
+    # Salva modello (entrambi i path per compatibilita)
     joblib.dump(model_pipeline, MODEL_PATH)
+    joblib.dump(model_pipeline, MODEL_PATH_LEGACY)
     print(f"\n✅ Modello salvato: {MODEL_PATH}")
     print(f"   Dimensione file: {MODEL_PATH.stat().st_size / 1024:.1f} KB")
 

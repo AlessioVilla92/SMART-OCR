@@ -46,7 +46,7 @@ class Config:
     # === Classificazione ===
     # Soglie confidence sotto cui la cella e "ambigua"
     SVM_CONFIDENCE_THRESHOLD = 0.65
-    YOLO_CONFIDENCE_THRESHOLD = 0.80
+    YOLO_CONFIDENCE_THRESHOLD = 0.55
 
     # HOG parameters (Mode A)
     HOG_WIN_SIZE = (64, 64)

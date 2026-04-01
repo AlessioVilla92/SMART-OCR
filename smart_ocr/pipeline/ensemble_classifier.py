@@ -28,7 +28,7 @@ from config import Config
 # Temperature scaling: divide i logits YOLO per T prima del softmax.
 # T=1.0 = nessuna calibrazione, T>1 = probabilita piu "morbide".
 # Con T=2.0, una predizione 0.99 diventa ~0.88, piu confrontabile con SVM.
-YOLO_TEMPERATURE = 2.0
+YOLO_TEMPERATURE = 1.5
 
 # Pesi per il soft voting (SVM, YOLO). Somma = 1.0.
 WEIGHT_SVM = 0.45
