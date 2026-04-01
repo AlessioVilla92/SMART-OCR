@@ -7,13 +7,13 @@ Output: immagine numpy BGR raddrizzata, pulita, normalizzata
 
 PIPELINE:
   1. Caricamento e validazione formato
-  2. Conversione grayscale
-  3. Denoising (fastNlMeans)
-  4. Binarizzazione adattiva (Gaussian)
+  2. White Balance automatico (xphoto)
+  3. Conversione LAB → CLAHE su canale L → grayscale migliorato
+  4. Denoising (fastNlMeans)
   5. Deskew (raddrizzamento rotazione)
-  6. Rilevamento e crop del foglio (4 angoli)
-  7. Correzione prospettiva (warpPerspective)
-  8. Normalizzazione risoluzione a 2480px larghezza (A4 300dpi)
+  6. Rilevamento bordi documento (HED deep learning + Canny fallback)
+  7. Correzione prospettiva (warpPerspective) con forzatura A4
+  8. Normalizzazione risoluzione a 2480x3508 (A4 300dpi)
   9. Miglioramento contrasto (CLAHE)
 """
 
@@ -26,6 +26,13 @@ from typing import Union, Tuple, Optional
 # Risoluzione target: A4 a 300 DPI
 TARGET_WIDTH = 2480
 TARGET_HEIGHT = 3508
+A4_ASPECT_RATIO = TARGET_HEIGHT / TARGET_WIDTH  # 1.4145
+
+# HED model paths
+_HED_DIR = Path(__file__).parent.parent / "models" / "hed"
+_HED_PROTOTXT = _HED_DIR / "deploy.prototxt"
+_HED_MODEL = _HED_DIR / "hed_pretrained_bsds.caffemodel"
+_hed_net = None  # Lazy-loaded singleton
 
 
 class PreprocessingError(Exception):
@@ -64,6 +71,40 @@ def load_image(source: Union[str, Path, np.ndarray]) -> np.ndarray:
         raise PreprocessingError(f"Formato immagine non supportato: {path}")
 
     return img
+
+
+def white_balance(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Applica white balance automatico per normalizzare il colore
+    su foto con illuminazione calda/fredda/fluorescente.
+    Usa SimpleWB da opencv-contrib (xphoto).
+    """
+    try:
+        wb = cv2.xphoto.createSimpleWB()
+        return wb.balanceWhite(img_bgr)
+    except AttributeError:
+        # opencv-contrib non disponibile, skip
+        return img_bgr
+
+
+def to_grayscale_via_lab(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Converte BGR in grayscale usando il canale L di LAB.
+    Il canale L rappresenta la luminosita percepita,
+    piu robusto alle variazioni di colore rispetto a cv2.cvtColor(BGR2GRAY).
+    Applica CLAHE sul canale L per normalizzare illuminazione non uniforme.
+    """
+    if len(img_bgr.shape) == 2:
+        return img_bgr
+
+    lab = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2LAB)
+    l_channel = lab[:, :, 0]
+
+    # CLAHE sul canale L: normalizza illuminazione non uniforme
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    l_enhanced = clahe.apply(l_channel)
+
+    return l_enhanced
 
 
 def to_grayscale(img: np.ndarray) -> np.ndarray:
@@ -137,19 +178,92 @@ def deskew(gray: np.ndarray) -> Tuple[np.ndarray, float]:
     return rotated, angle
 
 
+def _load_hed_net():
+    """Carica il modello HED (lazy singleton)."""
+    global _hed_net
+    if _hed_net is None and _HED_MODEL.exists() and _HED_PROTOTXT.exists():
+        _hed_net = cv2.dnn.readNetFromCaffe(str(_HED_PROTOTXT), str(_HED_MODEL))
+    return _hed_net
+
+
+def _hed_edges(gray: np.ndarray) -> Optional[np.ndarray]:
+    """
+    Rileva bordi con HED (Holistically-Nested Edge Detection).
+    Produce edge map molto piu pulita di Canny su foto con sfondi complessi.
+    """
+    net = _load_hed_net()
+    if net is None:
+        return None
+
+    h, w = gray.shape
+    # HED vuole BGR, riconverti da gray
+    bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+    # Resize a dimensione standard per HED (larghezza 500px per velocita)
+    scale = 500.0 / w
+    inp = cv2.resize(bgr, (500, int(h * scale)))
+
+    blob = cv2.dnn.blobFromImage(inp, scalefactor=1.0, size=inp.shape[1::-1],
+                                  mean=(104.00698793, 116.66876762, 122.67891434),
+                                  swapRB=False, crop=False)
+    net.setInput(blob)
+    hed_out = net.forward()
+    hed_out = hed_out[0, 0]
+    hed_out = (255 * hed_out).astype(np.uint8)
+
+    # Resize back a dimensione originale
+    hed_out = cv2.resize(hed_out, (w, h))
+
+    # Threshold per ottenere edge binari
+    _, edges = cv2.threshold(hed_out, 50, 255, cv2.THRESH_BINARY)
+
+    # Dilata per collegare bordi interrotti
+    kernel = np.ones((3, 3), np.uint8)
+    edges = cv2.dilate(edges, kernel, iterations=1)
+
+    return edges
+
+
+def _find_corners_from_edges(edges: np.ndarray, min_area: float) -> Optional[np.ndarray]:
+    """Trova il quadrilatero piu grande in una edge map."""
+    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None
+
+    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
+    for contour in contours:
+        if cv2.contourArea(contour) < min_area:
+            continue
+        peri = cv2.arcLength(contour, True)
+        for eps in [0.02, 0.04, 0.06, 0.08]:
+            approx = cv2.approxPolyDP(contour, eps * peri, True)
+            if len(approx) == 4:
+                pts = approx.reshape(4, 2).astype(np.float32)
+                return _order_points(pts)
+    return None
+
+
 def find_document_corners(gray: np.ndarray) -> Optional[np.ndarray]:
     """
     Trova i 4 angoli del documento nel frame fotografico.
     Strategia multi-livello:
-      1. Canny + contorni con epsilon crescente (0.02 → 0.08)
-      2. Fallback: soglia Otsu + morphology + contorni
+      1. HED deep learning edge detection (piu robusto)
+      2. Canny classico + contorni
+      3. Fallback: soglia Otsu + morphology
 
     Returns: array shape (4,2) con angoli [TL, TR, BR, BL] o None se non trovato
     """
     h, w = gray.shape
     min_area = (w * h) * 0.1
 
-    # --- Strategia 1: Canny + approxPolyDP con epsilon crescente ---
+    # --- Strategia 1: HED Deep Learning edges ---
+    hed_edges = _hed_edges(gray)
+    if hed_edges is not None:
+        corners = _find_corners_from_edges(hed_edges, min_area)
+        if corners is not None:
+            return corners
+
+    # --- Strategia 2: Canny classico + approxPolyDP ---
     blurred = cv2.GaussianBlur(gray, (5, 5), 0)
     high_thresh, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     low_thresh = high_thresh * 0.5
@@ -157,36 +271,18 @@ def find_document_corners(gray: np.ndarray) -> Optional[np.ndarray]:
     kernel = np.ones((3, 3), np.uint8)
     edges = cv2.dilate(edges, kernel, iterations=1)
 
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours:
-        contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
-        for contour in contours:
-            if cv2.contourArea(contour) < min_area:
-                continue
-            peri = cv2.arcLength(contour, True)
-            for eps in [0.02, 0.04, 0.06, 0.08]:
-                approx = cv2.approxPolyDP(contour, eps * peri, True)
-                if len(approx) == 4:
-                    pts = approx.reshape(4, 2).astype(np.float32)
-                    return _order_points(pts)
+    corners = _find_corners_from_edges(edges, min_area)
+    if corners is not None:
+        return corners
 
-    # --- Strategia 2: Soglia Otsu + morphology per foto con sfondo chiaro ---
+    # --- Strategia 3: Soglia Otsu + morphology ---
     _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     kernel_big = np.ones((5, 5), np.uint8)
     binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_big, iterations=3)
 
-    contours2, _ = cv2.findContours(binary, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if contours2:
-        contours2 = sorted(contours2, key=cv2.contourArea, reverse=True)[:5]
-        for contour in contours2:
-            if cv2.contourArea(contour) < min_area:
-                continue
-            peri = cv2.arcLength(contour, True)
-            for eps in [0.02, 0.04, 0.06, 0.08]:
-                approx = cv2.approxPolyDP(contour, eps * peri, True)
-                if len(approx) == 4:
-                    pts = approx.reshape(4, 2).astype(np.float32)
-                    return _order_points(pts)
+    corners = _find_corners_from_edges(binary, min_area)
+    if corners is not None:
+        return corners
 
     return None
 
@@ -208,37 +304,24 @@ def _order_points(pts: np.ndarray) -> np.ndarray:
 def correct_perspective(img: np.ndarray, corners: np.ndarray) -> np.ndarray:
     """
     Applica trasformazione prospettica per ottenere vista frontale del foglio.
+    Forza sempre output con aspect ratio A4 (1.4145) per garantire
+    compatibilita con le coordinate della griglia calibrate dal PDF.
 
     Args:
         img: immagine originale (BGR o grayscale)
         corners: 4 angoli ordinati [TL, TR, BR, BL]
-    Returns: immagine raddrizzata a dimensioni A4 proporzionali
+    Returns: immagine raddrizzata a dimensioni A4 (TARGET_WIDTH x TARGET_HEIGHT)
     """
-    tl, tr, br, bl = corners
-
-    # Calcola larghezza e altezza del documento trasformato
-    width_top = np.linalg.norm(tr - tl)
-    width_bottom = np.linalg.norm(br - bl)
-    max_width = int(max(width_top, width_bottom))
-
-    height_left = np.linalg.norm(bl - tl)
-    height_right = np.linalg.norm(br - tr)
-    max_height = int(max(height_left, height_right))
-
-    # Mantieni proporzione A4 se necessario
-    a4_ratio = 297 / 210
-    if max_height / max_width < a4_ratio * 0.8:
-        max_height = int(max_width * a4_ratio)
-
+    # Output fisso A4: la griglia e calibrata su queste dimensioni esatte
     dst = np.array([
         [0, 0],
-        [max_width - 1, 0],
-        [max_width - 1, max_height - 1],
-        [0, max_height - 1]
+        [TARGET_WIDTH - 1, 0],
+        [TARGET_WIDTH - 1, TARGET_HEIGHT - 1],
+        [0, TARGET_HEIGHT - 1]
     ], dtype=np.float32)
 
     M = cv2.getPerspectiveTransform(corners, dst)
-    return cv2.warpPerspective(img, M, (max_width, max_height))
+    return cv2.warpPerspective(img, M, (TARGET_WIDTH, TARGET_HEIGHT))
 
 
 def normalize_resolution(img: np.ndarray, target_width: int = TARGET_WIDTH) -> np.ndarray:
@@ -300,46 +383,54 @@ def preprocess_full_pipeline(
     if debug:
         _save_debug(img_bgr, "01_original")
 
-    # Step 2: Grayscale
-    gray = to_grayscale(img_bgr)
+    # Step 2: White Balance automatico
+    img_bgr = white_balance(img_bgr)
+    if debug:
+        _save_debug(img_bgr, "02_white_balanced")
 
-    # Step 3: Denoising
+    # Step 3: Conversione grayscale via LAB (illuminazione normalizzata)
+    gray = to_grayscale_via_lab(img_bgr)
+    if debug:
+        _save_debug(gray, "03_lab_grayscale")
+
+    # Step 4: Denoising
     gray = denoise(gray)
     if debug:
-        _save_debug(gray, "02_denoised")
+        _save_debug(gray, "04_denoised")
 
-    # Step 4: Deskew
+    # Step 5: Deskew
     gray, angle = deskew(gray)
     metadata['deskew_angle'] = angle
     if abs(angle) > 15:
-        warnings.append(f"Rotazione elevata rilevata: {angle:.1f}°. Foto più diritta migliora l'accuratezza.")
+        warnings.append(f"Rotazione elevata rilevata: {angle:.1f}°. Foto piu diritta migliora l'accuratezza.")
     if debug:
-        _save_debug(gray, f"03_deskewed_{angle:.1f}deg")
+        _save_debug(gray, f"05_deskewed_{angle:.1f}deg")
 
-    # Step 5: Rileva angoli documento
+    # Step 6: Rileva angoli documento (HED + Canny + Otsu)
     corners = find_document_corners(gray)
 
     if corners is not None:
+        # Warp direttamente a TARGET_WIDTH x TARGET_HEIGHT (A4)
         gray = correct_perspective(gray, corners)
         metadata['perspective_corrected'] = True
         if debug:
-            _save_debug(gray, "04_perspective_corrected")
+            _save_debug(gray, "06_perspective_corrected")
     else:
         metadata['perspective_corrected'] = False
-        warnings.append("Bordi documento non rilevati. Usa tutta l'immagine. Foto con più contrasto tra foglio e sfondo migliora il risultato.")
+        warnings.append("Bordi documento non rilevati. Usa tutta l'immagine. Foto con piu contrasto tra foglio e sfondo migliora il risultato.")
+        # Normalizza a larghezza target (senza forzare altezza)
+        gray = normalize_resolution(gray, TARGET_WIDTH)
 
-    # Step 6: Normalizza risoluzione
-    gray = normalize_resolution(gray, TARGET_WIDTH)
-
-    # Step 7: Migliora contrasto
+    # Step 7: Migliora contrasto finale
     gray = enhance_contrast(gray)
 
     h1, w1 = gray.shape
     metadata['final_size'] = (w1, h1)
+    metadata['aspect_ratio'] = h1 / w1 if w1 > 0 else 0
     metadata['warnings'] = warnings
 
     if debug:
-        _save_debug(gray, "05_final")
+        _save_debug(gray, "07_final")
 
     return gray, metadata
 

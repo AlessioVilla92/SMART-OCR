@@ -32,25 +32,38 @@ AMBIGUITY_RATIO = 0.6  # la seconda cella più scura deve avere < 60% dei pixel 
 
 def count_dark_pixels(cell: np.ndarray, threshold: int = 128) -> Tuple[int, float]:
     """
-    Conta i pixel scuri in una cella.
+    Conta i pixel scuri in una cella usando Sauvola thresholding.
+    Sauvola e superiore all'adaptive threshold di OpenCV su
+    illuminazione non uniforme (ombre, luce laterale su foto smartphone).
 
     Args:
         cell: immagine grayscale della cella
-        threshold: soglia sotto cui un pixel è "scuro"
+        threshold: soglia sotto cui un pixel è "scuro" (unused, kept for API)
 
     Returns: (conteggio_pixel_scuri, rapporto_pixel_scuri)
     """
     if cell is None or cell.size == 0:
         return 0, 0.0
 
-    # Binarizza con soglia adattiva per gestire illuminazione variabile
-    binary = cv2.adaptiveThreshold(
-        cell, 255,
-        cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
-        cv2.THRESH_BINARY_INV,
-        blockSize=15,
-        C=8
-    )
+    try:
+        from skimage.filters import threshold_sauvola
+        # Sauvola: window_size deve essere dispari e <= dimensione immagine
+        win = min(15, cell.shape[0] - 1, cell.shape[1] - 1)
+        if win % 2 == 0:
+            win -= 1
+        if win < 3:
+            win = 3
+        thresh_val = threshold_sauvola(cell, window_size=win, k=0.2)
+        binary = (cell < thresh_val).astype(np.uint8) * 255
+    except ImportError:
+        # Fallback a OpenCV adaptive threshold se scikit-image non disponibile
+        binary = cv2.adaptiveThreshold(
+            cell, 255,
+            cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+            cv2.THRESH_BINARY_INV,
+            blockSize=15,
+            C=8
+        )
 
     dark_count = cv2.countNonZero(binary)
     total = cell.shape[0] * cell.shape[1]
