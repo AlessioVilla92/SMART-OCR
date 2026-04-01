@@ -73,6 +73,24 @@ def load_image(source: Union[str, Path, np.ndarray]) -> np.ndarray:
     return img
 
 
+def remove_red_ink(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Rimuove segni in inchiostro rosso dalla foto.
+    Utile per feature matching: i segni dell'utente non devono
+    interferire con il matching al template pulito.
+    Usa inpainting sui pixel rossi in HSV.
+    """
+    hsv = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2HSV)
+    # Rosso wrappa in HSV: 0-10 e 170-180
+    mask1 = cv2.inRange(hsv, (0, 50, 50), (10, 255, 255))
+    mask2 = cv2.inRange(hsv, (170, 50, 50), (180, 255, 255))
+    red_mask = mask1 | mask2
+
+    if cv2.countNonZero(red_mask) > 0:
+        return cv2.inpaint(img_bgr, red_mask, 3, cv2.INPAINT_TELEA)
+    return img_bgr
+
+
 def white_balance(img_bgr: np.ndarray) -> np.ndarray:
     """
     Applica white balance automatico per normalizzare il colore
@@ -324,6 +342,80 @@ def correct_perspective(img: np.ndarray, corners: np.ndarray) -> np.ndarray:
     return cv2.warpPerspective(img, M, (TARGET_WIDTH, TARGET_HEIGHT))
 
 
+def align_to_template(gray: np.ndarray, page: str = "page_4") -> Tuple[np.ndarray, bool]:
+    """
+    Allinea la foto preprocessata al template PDF usando SIFT feature matching.
+    Usa solo le regioni con testo stampato (top 20% e bottom 10% dell'immagine)
+    per evitare match spuri con handwriting nella zona risposte.
+
+    Args:
+        gray: immagine grayscale gia con prospettiva corretta
+        page: pagina del questionario ("page_4", "page_5", "page_6")
+
+    Returns:
+        (immagine_allineata, successo)
+    """
+    page_to_file = {
+        "page_4": "cbcl1_page_4.png",
+        "page_5": "cbcl1_page_5.png",
+        "page_6": "cbcl1_page_6.png",
+    }
+
+    template_dir = Path(__file__).parent.parent / "data" / "pdf_pages"
+    template_file = template_dir / page_to_file.get(page, "cbcl1_page_4.png")
+
+    if not template_file.exists():
+        return gray, False
+
+    template = cv2.imread(str(template_file), cv2.IMREAD_GRAYSCALE)
+    if template is None:
+        return gray, False
+
+    template = cv2.resize(template, (gray.shape[1], gray.shape[0]))
+    h, w = gray.shape
+
+    # Crea maschera: usa solo header (top 20%) e footer (bottom 10%)
+    # dove c'e testo stampato ma niente handwriting
+    mask = np.zeros((h, w), dtype=np.uint8)
+    mask[0:int(h * 0.20), :] = 255       # header
+    mask[int(h * 0.90):h, :] = 255       # footer
+
+    # SIFT con maschera
+    sift = cv2.SIFT_create(nfeatures=5000)
+    kp1, des1 = sift.detectAndCompute(template, mask)
+    kp2, des2 = sift.detectAndCompute(gray, mask)
+
+    if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
+        return gray, False
+
+    flann = cv2.FlannBasedMatcher(
+        dict(algorithm=1, trees=5),
+        dict(checks=50)
+    )
+    matches = flann.knnMatch(des1, des2, k=2)
+
+    good = [m for m, n in matches if m.distance < 0.75 * n.distance]
+
+    if len(good) < 8:
+        return gray, False
+
+    src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+    dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+    H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
+    inliers = mask_h.ravel().sum() if mask_h is not None else 0
+
+    if H is None or inliers < 6:
+        return gray, False
+
+    det = np.linalg.det(H[:2, :2])
+    if det < 0.3 or det > 3.0:
+        return gray, False
+
+    aligned = cv2.warpPerspective(gray, H, (w, h))
+    return aligned, True
+
+
 def normalize_resolution(img: np.ndarray, target_width: int = TARGET_WIDTH) -> np.ndarray:
     """
     Ridimensiona a larghezza standard mantenendo aspect ratio.
@@ -388,40 +480,35 @@ def preprocess_full_pipeline(
     if debug:
         _save_debug(img_bgr, "02_white_balanced")
 
+    # Step 2b: Rimozione inchiostro rosso
+    img_bgr = remove_red_ink(img_bgr)
+
     # Step 3: Conversione grayscale via LAB (illuminazione normalizzata)
     gray = to_grayscale_via_lab(img_bgr)
-    if debug:
-        _save_debug(gray, "03_lab_grayscale")
 
     # Step 4: Denoising
     gray = denoise(gray)
     if debug:
-        _save_debug(gray, "04_denoised")
+        _save_debug(gray, "03_denoised")
 
     # Step 5: Deskew
     gray, angle = deskew(gray)
     metadata['deskew_angle'] = angle
     if abs(angle) > 15:
         warnings.append(f"Rotazione elevata rilevata: {angle:.1f}°. Foto piu diritta migliora l'accuratezza.")
-    if debug:
-        _save_debug(gray, f"05_deskewed_{angle:.1f}deg")
 
     # Step 6: Rileva angoli documento (HED + Canny + Otsu)
     corners = find_document_corners(gray)
 
     if corners is not None:
-        # Warp direttamente a TARGET_WIDTH x TARGET_HEIGHT (A4)
         gray = correct_perspective(gray, corners)
         metadata['perspective_corrected'] = True
-        if debug:
-            _save_debug(gray, "06_perspective_corrected")
     else:
         metadata['perspective_corrected'] = False
-        warnings.append("Bordi documento non rilevati. Usa tutta l'immagine. Foto con piu contrasto tra foglio e sfondo migliora il risultato.")
-        # Normalizza a larghezza target (senza forzare altezza)
+        warnings.append("Bordi documento non rilevati. Foto con piu contrasto tra foglio e sfondo migliora il risultato.")
         gray = normalize_resolution(gray, TARGET_WIDTH)
 
-    # Step 7: Migliora contrasto finale
+    # Step 7: Migliora contrasto
     gray = enhance_contrast(gray)
 
     h1, w1 = gray.shape
@@ -430,7 +517,7 @@ def preprocess_full_pipeline(
     metadata['warnings'] = warnings
 
     if debug:
-        _save_debug(gray, "07_final")
+        _save_debug(gray, "06_final")
 
     return gray, metadata
 
