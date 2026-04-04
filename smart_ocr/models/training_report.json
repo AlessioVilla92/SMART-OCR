@@ -1,54 +1,23 @@
 {
-  "timestamp": "2026-04-01T03:03:49.459240",
-  "dataset_size": 37370,
+  "timestamp": "2026-04-04T02:43:58.707913",
+  "dataset_size": 40790,
   "classes": [
     "segnato",
     "vuoto"
   ],
-  "cv_accuracy_mean": 0.9841851752742843,
-  "cv_accuracy_std": 0.000951372161339654,
-  "cv_scores_per_fold": [
-    0.9852823120149853,
-    0.9836767460529837,
-    0.9828739630719828,
-    0.9838105432164838,
-    0.9852823120149853
-  ],
-  "classification_report": {
-    "segnato": {
-      "precision": 0.9960629921259843,
-      "recall": 1.0,
-      "f1-score": 0.9980276134122288,
-      "support": 23276.0
-    },
-    "vuoto": {
-      "precision": 1.0,
-      "recall": 0.9934723996026678,
-      "f1-score": 0.9967255125284739,
-      "support": 14094.0
-    },
-    "accuracy": 0.9975381321915976,
-    "macro avg": {
-      "precision": 0.9980314960629921,
-      "recall": 0.9967361998013339,
-      "f1-score": 0.9973765629703513,
-      "support": 37370.0
-    },
-    "weighted avg": {
-      "precision": 0.9975478245845442,
-      "recall": 0.9975381321915976,
-      "f1-score": 0.997536529391473,
-      "support": 37370.0
-    }
-  },
+  "test_accuracy": 0.9324589360137289,
+  "train_size": 32632,
+  "test_size": 8158,
   "confusion_matrix": [
     [
-      23276,
-      92
+      4508,
+      394
     ],
     [
-      0,
-      14002
+      157,
+      3099
     ]
-  ]
+  ],
+  "classifier_type": "SGDClassifier+CalibratedCV",
+  "includes_pdf_cells": true
 }

@@ -170,3 +170,105 @@ def classify_all_items_omr(
     for item_id, cells in all_cells.items():
         results[item_id] = classify_item_omr(cells)
     return results
+
+
+# ---------------------------------------------------------------------------
+# PDF-optimized classification (Mode D)
+# ---------------------------------------------------------------------------
+# I PDF digitali hanno celle con numeri stampati (0, 1, 2) che producono
+# un baseline di pixel scuri ~5-10%. Il mark (X) aggiunge ~10-20%.
+# Strategia: logica inversa (2 celle vuote → la terza e il mark)
+# + winner-takes-all (la cella col ratio piu alto vince).
+# ---------------------------------------------------------------------------
+
+def classify_item_pdf(
+    cells: Dict[str, np.ndarray],
+    empty_threshold: float = 0.08,
+    min_ratio: float = 0.06,
+    ambiguity_gap: float = 0.0
+) -> dict:
+    """
+    Classifica le 3 celle di un item da PDF digitale.
+
+    Strategia combinata:
+    1. Se 2 celle sono chiaramente vuote (< empty_threshold) → la terza e il mark
+    2. Altrimenti winner-takes-all: la cella col ratio piu alto vince
+    3. Flag ambiguous solo se gap < ambiguity_gap (default 0 = mai ambiguo)
+
+    Args:
+        cells: {"0": cell_64x64, "1": cell_64x64, "2": cell_64x64}
+        empty_threshold: ratio sotto cui una cella e considerata vuota
+        min_ratio: ratio sotto cui TUTTE le celle → missing
+        ambiguity_gap: gap relativo minimo per non flaggare come ambiguo
+
+    Returns: dict con value, confidence, flag, raw_counts, method
+    """
+    ratios = {}
+    for col, cell in cells.items():
+        _, ratio = count_dark_pixels(cell)
+        ratios[col] = ratio
+
+    sorted_cols = sorted(ratios.items(), key=lambda x: x[1], reverse=True)
+    best_col, best_r = sorted_cols[0]
+    second_col, second_r = sorted_cols[1]
+    third_col, third_r = sorted_cols[2]
+
+    flag = None
+    value = None
+    marked_column = None
+    confidence = 0.0
+
+    if best_r < min_ratio:
+        # Tutte le celle essenzialmente vuote
+        flag = "missing"
+
+    elif second_r < empty_threshold and third_r < empty_threshold:
+        # Logica inversa: 2 celle vuote → la terza e il mark
+        marked_column = best_col
+        value = int(best_col)
+        confidence = 1.0 - (second_r / best_r) if best_r > 0 else 1.0
+
+    else:
+        # Winner-takes-all: la cella con piu pixel scuri vince
+        marked_column = best_col
+        value = int(best_col)
+        gap = (best_r - second_r) / best_r if best_r > 0 else 0
+        confidence = gap
+
+        if ambiguity_gap > 0 and gap < ambiguity_gap:
+            flag = "ambiguous"
+
+    return {
+        "marked_column": marked_column,
+        "value": value,
+        "confidence": round(confidence, 3),
+        "flag": flag,
+        "raw_counts": {col: round(ratio, 4) for col, ratio in ratios.items()},
+        "method": "omr_pdf_optimized"
+    }
+
+
+def classify_all_items_pdf(
+    all_cells: Dict[str, Dict[str, np.ndarray]],
+    empty_threshold: float = 0.08,
+    min_ratio: float = 0.06,
+    ambiguity_gap: float = 0.0
+) -> Dict[str, dict]:
+    """
+    Classifica tutti gli item con strategia ottimizzata per PDF digitali.
+
+    Args:
+        all_cells: output di grid_extractor.extract_all_cells()
+        empty_threshold: ratio sotto cui una cella e vuota
+        min_ratio: ratio minimo assoluto
+        ambiguity_gap: gap minimo per non-ambiguo
+
+    Returns:
+        {item_id: classification_result} per ogni item
+    """
+    results = {}
+    for item_id, cells in all_cells.items():
+        results[item_id] = classify_item_pdf(
+            cells, empty_threshold, min_ratio, ambiguity_gap
+        )
+    return results

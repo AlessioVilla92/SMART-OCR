@@ -45,7 +45,7 @@ inject_custom_css()
 def check_ready(selected_mode: ClassificationMode = ClassificationMode.MODE_A_SVM) -> str:
     """
     Verifica che il sistema sia pronto per l'analisi.
-    Returns: "svm", "yolo", "omr", o "none"
+    Returns: "svm", "yolo", "omr", "pdf", o "none"
     """
     # Controlla calibrazione
     status = get_calibration_status()
@@ -56,6 +56,11 @@ def check_ready(selected_mode: ClassificationMode = ClassificationMode.MODE_A_SV
             "`streamlit run training/label_tool.py` → tab 'Calibra Griglia'"
         )
         return "none"
+
+    # Mode D: PDF digitale
+    if selected_mode == ClassificationMode.MODE_D_PDF:
+        st.success("PDF mode attivo: OMR ottimizzato per PDF digitali (no preprocessing fotografico)")
+        return "pdf"
 
     # Mode C: Ensemble (SVM + YOLO + TTA)
     if selected_mode == ClassificationMode.MODE_C_ENSEMBLE:
@@ -102,25 +107,44 @@ def check_ready(selected_mode: ClassificationMode = ClassificationMode.MODE_A_SV
 def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = False) -> dict:
     """
     Processa un questionario caricato e ritorna il report completo.
-    method: "svm" o "omr"
+    method: "svm", "yolo", "ensemble", "omr", o "pdf"
     """
+    from core.omr_classifier import classify_all_items_pdf
+
     with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as tmp:
         tmp.write(uploaded_file.read())
         tmp_path = tmp.name
     uploaded_file.seek(0)
 
-    with st.spinner("1/4 — Pre-processing immagine..."):
-        gray, meta = preprocess_full_pipeline(tmp_path, debug=debug)
+    if method == "pdf":
+        # PDF mode: preprocessing leggero (solo resize, no prospettiva/deskew)
+        with st.spinner("1/3 — Caricamento immagine (PDF mode)..."):
+            img = cv2.imread(tmp_path)
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
+            gray = cv2.resize(gray, (2480, 3508), interpolation=cv2.INTER_AREA)
+            meta = {"pdf_mode": True}
+    else:
+        with st.spinner("1/4 — Pre-processing immagine..."):
+            gray, meta = preprocess_full_pipeline(tmp_path, debug=debug)
 
     if meta.get("warnings"):
         for w in meta["warnings"]:
             st.warning(f"⚠️ {w}")
 
-    with st.spinner("2/4 — Estrazione celle griglia..."):
+    step = "2/3" if method == "pdf" else "2/4"
+    with st.spinner(f"{step} — Estrazione celle griglia..."):
         cells_dict = extract_all_cells(gray, page)
 
-    with st.spinner(f"3/4 — Classificazione celle ({method.upper()})..."):
-        if method == "ensemble":
+    step = "3/3" if method == "pdf" else "3/4"
+    with st.spinner(f"{step} — Classificazione celle ({method.upper()})..."):
+        if method == "pdf":
+            classification_results = classify_all_items_pdf(
+                cells_dict,
+                empty_threshold=Config.PDF_EMPTY_THRESHOLD,
+                min_ratio=Config.PDF_MIN_RATIO,
+                ambiguity_gap=Config.PDF_AMBIGUITY_GAP
+            )
+        elif method == "ensemble":
             from pipeline.ensemble_classifier import EnsembleClassifier
             ens_clf = EnsembleClassifier()
             classification_results = {}
@@ -140,7 +164,13 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
         else:
             classification_results = classify_all_items_omr(cells_dict)
 
-    with st.spinner("4/4 — Calcolo score CBCL..."):
+    if method != "pdf":
+        with st.spinner("4/4 — Calcolo score CBCL..."):
+            report = build_score_report(
+                classification_results,
+                session_id=f"upload_{uploaded_file.name}"
+            )
+    else:
         report = build_score_report(
             classification_results,
             session_id=f"upload_{uploaded_file.name}"
@@ -218,11 +248,22 @@ def main():
         st.markdown("### Modalità Riconoscimento")
         mode_choice = st.radio(
             "Motore di classificazione",
-            ["A — Classico (HOG + SVM)", "B — AI (YOLOv8n ONNX)", "C — Ensemble (SVM + YOLO + TTA)"],
+            [
+                "A — Classico (HOG + SVM)",
+                "B — AI (YOLOv8n ONNX)",
+                "C — Ensemble (SVM + YOLO + TTA)",
+                "D — PDF digitale (OMR ottimizzato)"
+            ],
             index=2,
-            help="Mode A: robusto, no GPU. Mode B: AI fine-tuned. Mode C: ensemble di entrambi con TTA, massima accuratezza."
+            help=(
+                "Mode A: robusto, no GPU. Mode B: AI fine-tuned. "
+                "Mode C: ensemble di entrambi con TTA, massima accuratezza. "
+                "Mode D: per PDF digitali (no preprocessing fotografico, OMR winner-takes-all)."
+            )
         )
-        if "C" in mode_choice:
+        if "D" in mode_choice:
+            selected_mode = ClassificationMode.MODE_D_PDF
+        elif "C" in mode_choice:
             selected_mode = ClassificationMode.MODE_C_ENSEMBLE
         elif "B" in mode_choice:
             selected_mode = ClassificationMode.MODE_B_YOLO

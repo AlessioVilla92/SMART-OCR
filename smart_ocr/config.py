@@ -1,11 +1,13 @@
 """
 config.py
 
-Configurazione globale Smart OCR — Dual-Mode.
+Configurazione globale Smart OCR — Multi-Mode.
 Tutte le costanti, path e impostazioni centralizzate.
 
-Mode A: HOG + SVM (classico)
-Mode B: YOLOv8n ONNX (AI fine-tuned)
+Mode A: HOG + SVM (classico, per foto)
+Mode B: YOLOv8n ONNX (AI fine-tuned, per foto)
+Mode C: Ensemble SVM + YOLO (massima accuratezza, per foto)
+Mode D: PDF digitale (OMR ottimizzato, no preprocessing)
 """
 
 from pathlib import Path
@@ -16,6 +18,7 @@ class ClassificationMode(Enum):
     MODE_A_SVM = "svm"          # HOG features + SVM classifier
     MODE_B_YOLO = "yolo"        # YOLOv8n ONNX fine-tuned
     MODE_C_ENSEMBLE = "ensemble" # SVM + YOLO soft voting + TTA
+    MODE_D_PDF = "pdf"          # OMR ottimizzato per PDF digitali
 
 
 class Config:
@@ -63,6 +66,16 @@ class Config:
     # Legacy 3-classi (per compatibilita con modelli vecchi)
     CLASSES_LEGACY = {0: "cerchio", 1: "x_rossa", 2: "vuoto"}
     CLASSES_LEGACY_INV = {"cerchio": 0, "x_rossa": 1, "vuoto": 2}
+
+    # === PDF Mode (Mode D) ===
+    # Soglia sotto cui una cella e considerata vuota (nessun mark)
+    PDF_EMPTY_THRESHOLD = 0.08
+    # Rapporto minimo di pixel scuri per considerare la cella non vuota
+    PDF_MIN_RATIO = 0.06
+    # Gap relativo minimo per classificazione non-ambigua (winner-takes-all)
+    PDF_AMBIGUITY_GAP = 0.0  # 0 = puro winner-takes-all
+    # Risoluzione target per rendering PDF
+    PDF_RENDER_DPI = 300
 
     # Output
     OUTPUT_CSV_SEPARATOR = ";"  # Punto e virgola per Excel italiano
