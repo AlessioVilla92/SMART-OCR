@@ -342,18 +342,18 @@ def correct_perspective(img: np.ndarray, corners: np.ndarray) -> np.ndarray:
     return cv2.warpPerspective(img, M, (TARGET_WIDTH, TARGET_HEIGHT))
 
 
-def align_to_template(gray: np.ndarray, page: str = "page_4") -> Tuple[np.ndarray, bool]:
+def align_to_template(gray: np.ndarray, page: str = "page_4") -> Tuple[np.ndarray, bool, dict]:
     """
-    Allinea la foto preprocessata al template PDF usando SIFT feature matching.
-    Usa solo le regioni con testo stampato (top 20% e bottom 10% dell'immagine)
-    per evitare match spuri con handwriting nella zona risposte.
+    Allinea la foto preprocessata al template PDF usando feature matching.
+    Strategia: SIFT con maschera estesa (header, footer, margini, bordi griglia)
+    + fallback AKAZE se SIFT non trova abbastanza match.
 
     Args:
         gray: immagine grayscale gia con prospettiva corretta
         page: pagina del questionario ("page_4", "page_5", "page_6")
 
     Returns:
-        (immagine_allineata, successo)
+        (immagine_allineata, successo, info_dict)
     """
     page_to_file = {
         "page_4": "cbcl1_page_4.png",
@@ -363,57 +363,230 @@ def align_to_template(gray: np.ndarray, page: str = "page_4") -> Tuple[np.ndarra
 
     template_dir = Path(__file__).parent.parent / "data" / "pdf_pages"
     template_file = template_dir / page_to_file.get(page, "cbcl1_page_4.png")
+    info = {"method": None, "inliers": 0, "good_matches": 0}
 
     if not template_file.exists():
-        return gray, False
+        return gray, False, info
 
     template = cv2.imread(str(template_file), cv2.IMREAD_GRAYSCALE)
     if template is None:
-        return gray, False
+        return gray, False, info
 
     template = cv2.resize(template, (gray.shape[1], gray.shape[0]))
     h, w = gray.shape
 
-    # Crea maschera: usa solo header (top 20%) e footer (bottom 10%)
-    # dove c'e testo stampato ma niente handwriting
+    # Maschera estesa: header, footer, margini, divisore centrale, bordi griglia
     mask = np.zeros((h, w), dtype=np.uint8)
-    mask[0:int(h * 0.20), :] = 255       # header
-    mask[int(h * 0.90):h, :] = 255       # footer
+    mask[0:int(h * 0.22), :] = 255                    # header + intestazione griglia
+    mask[int(h * 0.88):h, :] = 255                     # footer
+    mask[:, 0:int(w * 0.06)] = 255                     # margine sinistro (numeri item)
+    mask[:, int(w * 0.46):int(w * 0.55)] = 255         # divisore centrale tra colonne
+    mask[:, int(w * 0.94):] = 255                      # margine destro
 
-    # SIFT con maschera
-    sift = cv2.SIFT_create(nfeatures=5000)
-    kp1, des1 = sift.detectAndCompute(template, mask)
-    kp2, des2 = sift.detectAndCompute(gray, mask)
+    def _try_match(detector, matcher, desc_name):
+        """Prova feature matching con un detector specifico."""
+        kp1, des1 = detector.detectAndCompute(template, mask)
+        kp2, des2 = detector.detectAndCompute(gray, mask)
 
-    if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
-        return gray, False
+        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
+            return None, 0, 0
 
-    flann = cv2.FlannBasedMatcher(
-        dict(algorithm=1, trees=5),
-        dict(checks=50)
+        raw_matches = matcher.knnMatch(des1, des2, k=2)
+        good = [m for m, n in raw_matches if m.distance < 0.75 * n.distance]
+
+        if len(good) < 8:
+            return None, len(good), 0
+
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+        # USAC_MAGSAC se disponibile, altrimenti RANSAC
+        try:
+            H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.USAC_MAGSAC, 3.0)
+        except (cv2.error, AttributeError):
+            H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 3.0)
+
+        inliers = int(mask_h.ravel().sum()) if mask_h is not None else 0
+
+        if H is None or inliers < 6:
+            return None, len(good), inliers
+
+        det = np.linalg.det(H[:2, :2])
+        if det < 0.3 or det > 3.0:
+            return None, len(good), inliers
+
+        return H, len(good), inliers
+
+    # --- Strategia 1: SIFT (piu accurato) ---
+    sift = cv2.SIFT_create(nfeatures=10000)
+    flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=80))
+    H, good_n, inliers = _try_match(sift, flann, "sift")
+
+    if H is not None:
+        aligned = cv2.warpPerspective(gray, H, (w, h))
+        info = {"method": "sift", "inliers": inliers, "good_matches": good_n}
+        return aligned, True, info
+
+    # --- Strategia 2: AKAZE fallback (piu robusto su immagini compresse) ---
+    akaze = cv2.AKAZE_create()
+    bf = cv2.BFMatcher(cv2.NORM_HAMMING)
+    H, good_n, inliers = _try_match(akaze, bf, "akaze")
+
+    if H is not None:
+        aligned = cv2.warpPerspective(gray, H, (w, h))
+        info = {"method": "akaze", "inliers": inliers, "good_matches": good_n}
+        return aligned, True, info
+
+    info = {"method": None, "inliers": inliers, "good_matches": good_n}
+    return gray, False, info
+
+
+def detect_grid_offsets(
+    gray: np.ndarray,
+    page: str = "page_4"
+) -> dict:
+    """
+    Rileva le linee orizzontali/verticali della griglia con Hough transform,
+    confronta con le posizioni attese dal template, e calcola offset
+    per-riga Y e per-colonna X per correzione locale.
+
+    Returns:
+        {
+            "row_y_offsets": {item_id: delta_y_rel, ...},
+            "col_x_offsets": {item_id: {"col_0_x": dx, "col_1_x": dx, "col_2_x": dx}, ...},
+            "success": bool
+        }
+    """
+    import json as _json
+
+    h, w = gray.shape
+    result = {"row_y_offsets": {}, "col_x_offsets": {}, "success": False}
+
+    # Carica template
+    template_path = Path(__file__).parent.parent / "templates" / "cbcl_grid.json"
+    if not template_path.exists():
+        return result
+
+    with open(template_path) as f:
+        grid = _json.load(f)
+
+    if page not in grid["pages"]:
+        return result
+
+    page_data = grid["pages"][page]
+    items = page_data["items"]
+
+    # --- Step 1: Rileva linee orizzontali ---
+    binary = cv2.adaptiveThreshold(
+        gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C,
+        cv2.THRESH_BINARY_INV, 15, 5
     )
-    matches = flann.knnMatch(des1, des2, k=2)
 
-    good = [m for m, n in matches if m.distance < 0.75 * n.distance]
+    # Kernel orizzontale largo per isolare linee della griglia
+    h_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (w // 15, 1))
+    horizontal = cv2.morphologyEx(binary, cv2.MORPH_OPEN, h_kernel)
 
-    if len(good) < 8:
-        return gray, False
+    h_lines = cv2.HoughLinesP(
+        horizontal, 1, np.pi / 180,
+        threshold=80, minLineLength=w // 8, maxLineGap=30
+    )
 
-    src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-    dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+    # Kernel verticale alto per isolare linee verticali
+    v_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (1, h // 25))
+    vertical = cv2.morphologyEx(binary, cv2.MORPH_OPEN, v_kernel)
 
-    H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 5.0)
-    inliers = mask_h.ravel().sum() if mask_h is not None else 0
+    v_lines = cv2.HoughLinesP(
+        vertical, 1, np.pi / 180,
+        threshold=80, minLineLength=h // 15, maxLineGap=30
+    )
 
-    if H is None or inliers < 6:
-        return gray, False
+    # --- Step 2: Clusterizza Y delle linee orizzontali ---
+    detected_y = []
+    if h_lines is not None:
+        for line in h_lines:
+            y_mid = (line[0][1] + line[0][3]) / 2.0
+            detected_y.append(y_mid)
 
-    det = np.linalg.det(H[:2, :2])
-    if det < 0.3 or det > 3.0:
-        return gray, False
+    detected_x = []
+    if v_lines is not None:
+        for line in v_lines:
+            x_mid = (line[0][0] + line[0][2]) / 2.0
+            detected_x.append(x_mid)
 
-    aligned = cv2.warpPerspective(gray, H, (w, h))
-    return aligned, True
+    if len(detected_y) < 3:
+        return result
+
+    # Clusterizza Y con tolleranza di 8px
+    detected_y.sort()
+    y_clusters = []
+    cluster = [detected_y[0]]
+    for y in detected_y[1:]:
+        if y - cluster[-1] < 8:
+            cluster.append(y)
+        else:
+            y_clusters.append(np.median(cluster))
+            cluster = [y]
+    y_clusters.append(np.median(cluster))
+
+    # Clusterizza X
+    detected_x.sort()
+    x_clusters = []
+    if detected_x:
+        cluster = [detected_x[0]]
+        for x in detected_x[1:]:
+            if x - cluster[-1] < 8:
+                cluster.append(x)
+            else:
+                x_clusters.append(np.median(cluster))
+                cluster = [x]
+        x_clusters.append(np.median(cluster))
+
+    y_clusters = np.array(y_clusters)
+    x_clusters = np.array(x_clusters)
+
+    # --- Step 3: Per ogni item, trova la linea orizzontale piu vicina ---
+    cell_h_rel = page_data["cell_height_rel"]
+    cell_h_px = cell_h_rel * h
+
+    for item_id, coords in items.items():
+        expected_y_px = coords["row_y"] * h
+
+        # Trova le due linee orizzontali che racchiudono la riga
+        # (la riga dell'item si trova TRA due linee della griglia)
+        diffs = y_clusters - expected_y_px
+        above = y_clusters[diffs <= cell_h_px * 0.5]
+        below = y_clusters[diffs >= -cell_h_px * 0.5]
+
+        if len(above) > 0 and len(below) > 0:
+            nearest_above = above[np.argmin(np.abs(above - expected_y_px))]
+            nearest_below = below[np.argmin(np.abs(below - expected_y_px))]
+
+            # Correggi solo se la linea rilevata è vicina (< 2x altezza cella)
+            best_line = nearest_above if abs(nearest_above - expected_y_px) < abs(nearest_below - expected_y_px) else nearest_below
+            delta = best_line - expected_y_px
+
+            if abs(delta) < cell_h_px * 2:
+                result["row_y_offsets"][item_id] = delta / h
+
+        # Offset X per colonne: trova linee verticali vicine alle colonne attese
+        if len(x_clusters) > 0:
+            col_offsets = {}
+            for col_key in ["col_0_x", "col_1_x", "col_2_x"]:
+                if col_key not in coords:
+                    continue
+                expected_x_px = coords[col_key] * w
+                nearest_idx = np.argmin(np.abs(x_clusters - expected_x_px))
+                delta_x = x_clusters[nearest_idx] - expected_x_px
+                cell_w_px = page_data["cell_width_rel"] * w
+
+                if abs(delta_x) < cell_w_px * 2:
+                    col_offsets[col_key] = delta_x / w
+
+            if col_offsets:
+                result["col_x_offsets"][item_id] = col_offsets
+
+    result["success"] = len(result["row_y_offsets"]) > 5
+    return result
 
 
 def normalize_resolution(img: np.ndarray, target_width: int = TARGET_WIDTH) -> np.ndarray:

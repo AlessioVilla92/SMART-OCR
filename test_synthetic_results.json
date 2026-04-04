@@ -1,0 +1,146 @@
+{
+  "pdf_mode": [
+    {
+      "set": 1,
+      "total_score": 61,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 2,
+      "total_score": 100,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 3,
+      "total_score": 52,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 4,
+      "total_score": 130,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 5,
+      "total_score": 106,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 6,
+      "total_score": 130,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 7,
+      "total_score": 125,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 8,
+      "total_score": 94,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 9,
+      "total_score": 91,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    },
+    {
+      "set": 10,
+      "total_score": 86,
+      "items_scored": 122,
+      "items_ambiguous": 0,
+      "items_flagged": 0
+    }
+  ],
+  "svm_mode": [
+    {
+      "set": 1,
+      "total_score": 43,
+      "items_scored": 90,
+      "items_ambiguous": 36,
+      "items_flagged": 68
+    },
+    {
+      "set": 2,
+      "total_score": 44,
+      "items_scored": 79,
+      "items_ambiguous": 22,
+      "items_flagged": 65
+    },
+    {
+      "set": 3,
+      "total_score": 9,
+      "items_scored": 26,
+      "items_ambiguous": 5,
+      "items_flagged": 101
+    },
+    {
+      "set": 4,
+      "total_score": 83,
+      "items_scored": 79,
+      "items_ambiguous": 26,
+      "items_flagged": 69
+    },
+    {
+      "set": 5,
+      "total_score": 58,
+      "items_scored": 70,
+      "items_ambiguous": 29,
+      "items_flagged": 81
+    },
+    {
+      "set": 6,
+      "total_score": 71,
+      "items_scored": 72,
+      "items_ambiguous": 33,
+      "items_flagged": 83
+    },
+    {
+      "set": 7,
+      "total_score": 58,
+      "items_scored": 68,
+      "items_ambiguous": 23,
+      "items_flagged": 77
+    },
+    {
+      "set": 8,
+      "total_score": 16,
+      "items_scored": 21,
+      "items_ambiguous": 7,
+      "items_flagged": 108
+    },
+    {
+      "set": 9,
+      "total_score": 19,
+      "items_scored": 26,
+      "items_ambiguous": 6,
+      "items_flagged": 102
+    },
+    {
+      "set": 10,
+      "total_score": 30,
+      "items_scored": 50,
+      "items_ambiguous": 12,
+      "items_flagged": 84
+    }
+  ]
+}

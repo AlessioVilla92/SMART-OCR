@@ -88,10 +88,17 @@ def extract_cell(
 
 def extract_all_cells(
     img: np.ndarray,
-    page: str = "page_4"
+    page: str = "page_4",
+    offsets: Optional[dict] = None
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """
     Estrae tutte le celle per tutti gli item della pagina specificata.
+
+    Args:
+        img: immagine grayscale preprocessata
+        page: pagina del questionario
+        offsets: correzioni locali da detect_grid_offsets()
+                 {"row_y_offsets": {item_id: dy}, "col_x_offsets": {item_id: {col_key: dx}}, "success": bool}
 
     Returns:
         {
@@ -107,16 +114,31 @@ def extract_all_cells(
     cell_w = template["cell_width_rel"]
     cell_h = template["cell_height_rel"]
 
+    use_offsets = offsets and offsets.get("success", False)
+    row_offsets = offsets.get("row_y_offsets", {}) if use_offsets else {}
+    col_offsets = offsets.get("col_x_offsets", {}) if use_offsets else {}
+
     result = {}
 
     for item_id, coords in items.items():
         row_y = coords["row_y"]
+
+        # Applica offset Y per-riga
+        if item_id in row_offsets:
+            row_y += row_offsets[item_id]
+
+        item_col_offsets = col_offsets.get(item_id, {})
 
         cells = {}
         for col_label, col_key in [("0", "col_0_x"), ("1", "col_1_x"), ("2", "col_2_x")]:
             if col_key not in coords:
                 continue
             col_x = coords[col_key]
+
+            # Applica offset X per-colonna
+            if col_key in item_col_offsets:
+                col_x += item_col_offsets[col_key]
+
             cells[col_label] = extract_cell(img, col_x, row_y, cell_w, cell_h)
 
         result[item_id] = cells
@@ -124,7 +146,11 @@ def extract_all_cells(
     return result
 
 
-def visualize_grid_overlay(img: np.ndarray, page: str = "page_4") -> np.ndarray:
+def visualize_grid_overlay(
+    img: np.ndarray,
+    page: str = "page_4",
+    offsets: Optional[dict] = None
+) -> np.ndarray:
     """
     Genera immagine con overlay delle celle rilevate.
     Utile per debug e calibrazione del template.
@@ -138,6 +164,10 @@ def visualize_grid_overlay(img: np.ndarray, page: str = "page_4") -> np.ndarray:
     cell_h = template["cell_height_rel"]
     h, w = img.shape
 
+    use_offsets = offsets and offsets.get("success", False)
+    row_offsets = offsets.get("row_y_offsets", {}) if use_offsets else {}
+    col_offsets = offsets.get("col_x_offsets", {}) if use_offsets else {}
+
     colors = {
         "col_0_x": (255, 100, 100),  # Blu
         "col_1_x": (100, 255, 100),  # Verde
@@ -146,12 +176,20 @@ def visualize_grid_overlay(img: np.ndarray, page: str = "page_4") -> np.ndarray:
 
     for item_id, coords in items.items():
         row_y = coords["row_y"]
+        if item_id in row_offsets:
+            row_y += row_offsets[item_id]
+
+        item_col_offsets = col_offsets.get(item_id, {})
 
         for col_key, color in colors.items():
             if col_key not in coords:
                 continue
 
-            cx = int(coords[col_key] * w)
+            col_x = coords[col_key]
+            if col_key in item_col_offsets:
+                col_x += item_col_offsets[col_key]
+
+            cx = int(col_x * w)
             cy = int(row_y * h)
             cw = max(int(cell_w * w), 20)
             ch = max(int(cell_h * h), 20)

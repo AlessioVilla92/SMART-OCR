@@ -26,7 +26,7 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config, ClassificationMode
-from core.preprocessor import preprocess_full_pipeline
+from core.preprocessor import preprocess_full_pipeline, align_to_template, detect_grid_offsets
 from core.grid_extractor import extract_all_cells, visualize_grid_overlay
 from core.omr_classifier import classify_all_items_omr, classify_all_items_pdf
 from core.scorer import build_score_report
@@ -166,8 +166,24 @@ class OCREngine:
         else:
             gray, meta = preprocess_full_pipeline(image_path_or_array, debug=debug)
 
-        # Step 2: Estrazione celle
-        cells_dict = extract_all_cells(gray, page)
+        # Step 1b: Allineamento SIFT al template (solo foto, non PDF)
+        offsets = None
+        if method != "pdf":
+            gray, aligned_ok, align_info = align_to_template(gray, page)
+            meta['sift_aligned'] = aligned_ok
+            meta['alignment_info'] = align_info
+            if not aligned_ok:
+                meta.setdefault('warnings', []).append(
+                    "Allineamento SIFT al template fallito. Accuratezza potrebbe essere ridotta."
+                )
+
+            # Step 1c: Correzione locale con Hough grid lines
+            if aligned_ok:
+                offsets = detect_grid_offsets(gray, page)
+                meta['grid_offsets_success'] = offsets.get('success', False)
+
+        # Step 2: Estrazione celle (con correzioni locali se disponibili)
+        cells_dict = extract_all_cells(gray, page, offsets=offsets)
 
         # Step 3: Classificazione
         classification_results = {}
@@ -203,7 +219,7 @@ class OCREngine:
         report["_fallback_reason"] = self._fallback_reason
 
         if debug:
-            report["_overlay"] = visualize_grid_overlay(gray, page)
+            report["_overlay"] = visualize_grid_overlay(gray, page, offsets=offsets)
             report["_preprocessed"] = gray
             report["_preprocess_meta"] = meta
 
