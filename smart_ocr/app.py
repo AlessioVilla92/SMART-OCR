@@ -23,13 +23,28 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent))
 
 from config import Config, ClassificationMode
-from core.preprocessor import preprocess_full_pipeline
+from core.preprocessor import preprocess_full_pipeline, load_image
+from core.boundary_detector import detect_document_boundary, warp_to_a4, draw_boundary_overlay
+from core.template_aligner import TemplateAligner
 from core.grid_extractor import extract_all_cells, visualize_grid_overlay
 from core.classifier import get_classifier
 from core.omr_classifier import classify_all_items_omr
 from core.scorer import build_score_report, report_to_csv, report_to_json, ALL_ITEMS
 from core.calibrator import get_calibration_status
 from style import inject_custom_css, render_header, glass_card, status_pill
+
+
+@st.cache_resource
+def get_aligner():
+    """Singleton TemplateAligner con reference cached."""
+    aligner = TemplateAligner()
+    try:
+        aligner.load_reference("page_4")
+        aligner.load_reference("page_5")
+        aligner.load_reference("page_6")
+    except FileNotFoundError:
+        pass  # Reference non generate, alignment disabilitato
+    return aligner
 
 
 # Configurazione pagina
@@ -108,6 +123,13 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
     """
     Processa un questionario caricato e ritorna il report completo.
     method: "svm", "yolo", "ensemble", "omr", o "pdf"
+
+    Pipeline v2.1 (5 fasi per foto):
+    1. Boundary detection + overlay giallo
+    2. Perspective correction A4
+    3. Preprocessing (shadow removal + denoise + CLAHE)
+    4. SIFT+ECC alignment al template PDF
+    5. Classificazione celle
     """
     from core.omr_classifier import classify_all_items_pdf
 
@@ -124,19 +146,64 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
             gray = cv2.resize(gray, (2480, 3508), interpolation=cv2.INTER_AREA)
             meta = {"pdf_mode": True}
     else:
-        with st.spinner("1/4 — Pre-processing immagine..."):
-            gray, meta = preprocess_full_pipeline(tmp_path, debug=debug)
+        # FASE 1: Boundary detection
+        with st.spinner("1/5 — Rilevamento bordi documento..."):
+            img = load_image(tmp_path)
+            corners = None
+            try:
+                corners, conf, det_method = detect_document_boundary(img)
+                # Verifica qualità: scarta se corners sui bordi immagine o confidence bassa
+                h_img, w_img = img.shape[:2]
+                margin = 5
+                on_edge = any(
+                    c[0] < margin or c[1] < margin or
+                    c[0] > w_img - margin or c[1] > h_img - margin
+                    for c in corners
+                )
+                if on_edge or conf < 0.5:
+                    if debug:
+                        st.info(f"Boundary {det_method} scartato (conf={conf:.0%}, on_edge={on_edge}). Skip perspective correction.")
+                    corners = None
+                else:
+                    overlay = draw_boundary_overlay(img, corners)
+                    st.image(cv2.cvtColor(overlay, cv2.COLOR_BGR2RGB),
+                             caption=f"Bordi: {det_method} (conf={conf:.0%})",
+                             use_container_width=True)
+            except Exception as e:
+                if debug:
+                    st.warning(f"Boundary detection fallito: {e}")
+
+        # FASE 2: Perspective correction A4
+        with st.spinner("2/5 — Correzione prospettiva..."):
+            if corners is not None:
+                warped = warp_to_a4(img, corners)
+            else:
+                warped = img
+
+        # FASE 3: Preprocessing (shadow removal + denoise + CLAHE)
+        with st.spinner("3/5 — Pre-processing immagine..."):
+            gray, meta = preprocess_full_pipeline(warped, debug=debug)
+
+        # FASE 4: SIFT+ECC alignment al template
+        with st.spinner("4/5 — Allineamento al template..."):
+            aligner = get_aligner()
+            aligned, align_info = aligner.align(gray, page)
+            if align_info.get("aligned"):
+                gray = aligned
+                if debug:
+                    st.json(align_info)
+            elif debug:
+                st.info(f"Alignment non riuscito: {align_info}")
 
     if meta.get("warnings"):
         for w in meta["warnings"]:
-            st.warning(f"⚠️ {w}")
+            st.warning(f"Warning: {w}")
 
-    step = "2/3" if method == "pdf" else "2/4"
-    with st.spinner(f"{step} — Estrazione celle griglia..."):
+    # FASE 5: Estrazione celle e classificazione
+    step = "2/3" if method == "pdf" else "5/5"
+    with st.spinner(f"{step} — Estrazione e classificazione celle ({method.upper()})..."):
         cells_dict = extract_all_cells(gray, page)
 
-    step = "3/3" if method == "pdf" else "3/4"
-    with st.spinner(f"{step} — Classificazione celle ({method.upper()})..."):
         if method == "pdf":
             classification_results = classify_all_items_pdf(
                 cells_dict,
@@ -164,20 +231,17 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
         else:
             classification_results = classify_all_items_omr(cells_dict)
 
-    if method != "pdf":
-        with st.spinner("4/4 — Calcolo score CBCL..."):
-            report = build_score_report(
-                classification_results,
-                session_id=f"upload_{uploaded_file.name}"
-            )
-    else:
-        report = build_score_report(
-            classification_results,
-            session_id=f"upload_{uploaded_file.name}"
-        )
+    report = build_score_report(
+        classification_results,
+        session_id=f"upload_{uploaded_file.name}"
+    )
 
     report['_overlay'] = visualize_grid_overlay(gray, page)
     report['_preprocessed'] = gray
+
+    if debug and '_overlay' in report:
+        st.image(report['_overlay'], caption="Griglia sovrapposta dopo alignment",
+                 use_container_width=True)
 
     return report
 
@@ -301,13 +365,13 @@ def main():
         st.markdown("<div class='subtle-sep'></div>", unsafe_allow_html=True)
         st.markdown(
             "<div style='text-align:center; color:#475569; font-size:0.7rem; padding-top:8px;'>"
-            "Smart OCR v1.0<br>CBCL 6-18 Scanner"
+            "Smart OCR v2.1<br>CBCL 6-18 Scanner"
             "</div>",
             unsafe_allow_html=True
         )
 
     # Titolo
-    render_header("Smart OCR", "Lettura automatica questionari CBCL 6-18 da foto smartphone", "1.0")
+    render_header("Smart OCR", "Lettura automatica questionari CBCL 6-18 da foto smartphone", "2.1")
 
     # Tab principali
     tab_upload, tab_results, tab_export = st.tabs([
@@ -356,10 +420,7 @@ def main():
                         c3.metric("❌ Item Mancanti", stats["items_missing"])
                         c4.metric("⚠️ Ambigui", stats["items_ambiguous"])
 
-                        if debug_mode and '_overlay' in report:
-                            st.image(report['_overlay'], caption="Overlay griglia rilevata", use_container_width=True)
-
-                        st.success("✅ Analisi completata! Vai alla tab 'Risultati'")
+                        st.success("Analisi completata! Vai alla tab 'Risultati'")
 
                     except Exception as e:
                         st.error(f"❌ Errore durante l'analisi: {e}")

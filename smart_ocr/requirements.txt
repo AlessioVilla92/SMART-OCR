@@ -24,5 +24,12 @@ joblib>=1.4.0
 # PDF text extraction (calibrazione automatica)
 pdfplumber>=0.11.0
 
+# Boundary detection neurale (fallback)
+docaligner-docsaid>=1.1.0
+PyTurboJPEG<2.0
+
+# Generazione riferimenti PDF (una tantum)
+PyMuPDF>=1.24.0
+
 # Packaging
 pyinstaller>=6.6.0

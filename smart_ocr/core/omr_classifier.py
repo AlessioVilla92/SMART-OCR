@@ -23,8 +23,8 @@ from typing import Dict, Tuple, Optional
 # Soglia minima: % di pixel scuri per considerare una cella "marcata"
 # Una cella 64x64 = 4096 pixel totali
 # Un cerchio o X occupa tipicamente 15-40% della cella
-MIN_MARK_RATIO = 0.08  # 8% dei pixel devono essere scuri
-MAX_EMPTY_RATIO = 0.04  # sotto 4% la cella è sicuramente vuota
+MIN_MARK_RATIO = 0.12  # 12% dei pixel devono essere scuri (alzato da 0.08 per ridurre falsi positivi)
+MAX_EMPTY_RATIO = 0.05  # sotto 5% la cella è sicuramente vuota
 
 # Soglia per distinguere "ambiguo" — quando due celle hanno conteggi simili
 AMBIGUITY_RATIO = 0.6  # la seconda cella più scura deve avere < 60% dei pixel della prima
@@ -139,6 +139,21 @@ def classify_item_omr(
         else:
             # Ambiguo: due celle con conteggi simili
             flag = "multiple_marks"
+
+    # Doppia conferma: le altre celle devono essere vuote per confermare il mark
+    if value is not None:
+        other_ratios = [r for col, r in counts.items() if col != marked_column]
+        max_other = max(other_ratios) if other_ratios else 0
+        if max_other < 0.05:
+            # Conferma forte: 1 marcata + 2 vuote
+            confidence = min(1.0, confidence * 1.2)
+        elif max_other < 0.08:
+            pass  # Conferma OK
+        else:
+            # Conferma debole: altra cella con pixel significativi
+            confidence *= 0.6
+            if flag is None:
+                flag = "low_confidence"
 
     # Se la confidence è troppo bassa, segna come ambiguo
     if value is not None and confidence < 0.3:

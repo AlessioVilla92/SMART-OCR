@@ -3,18 +3,21 @@ core/preprocessor.py
 
 Pipeline di pre-processing fotografico per questionari CBCL.
 Input:  path immagine o array numpy BGR
-Output: immagine numpy BGR raddrizzata, pulita, normalizzata
+Output: immagine numpy grayscale raddrizzata, pulita, normalizzata
 
-PIPELINE:
+PIPELINE v2.1:
   1. Caricamento e validazione formato
   2. White Balance automatico (xphoto)
-  3. Conversione LAB → CLAHE su canale L → grayscale migliorato
-  4. Denoising (fastNlMeans)
-  5. Deskew (raddrizzamento rotazione)
-  6. Rilevamento bordi documento (HED deep learning + Canny fallback)
-  7. Correzione prospettiva (warpPerspective) con forzatura A4
-  8. Normalizzazione risoluzione a 2480x3508 (A4 300dpi)
+  3. Rimozione inchiostro rosso
+  4. Rimozione ombre (shadow removal)
+  5. Conversione LAB → CLAHE su canale L → grayscale migliorato
+  6. Denoising (bilateralFilter)
+  7. Deskew (raddrizzamento rotazione)
+  8. Normalizzazione risoluzione
   9. Miglioramento contrasto (CLAHE)
+
+NOTE: Boundary detection e perspective correction sono ora in boundary_detector.py.
+      Template alignment è ora in template_aligner.py.
 """
 
 import cv2
@@ -27,12 +30,6 @@ from typing import Union, Tuple, Optional
 TARGET_WIDTH = 2480
 TARGET_HEIGHT = 3508
 A4_ASPECT_RATIO = TARGET_HEIGHT / TARGET_WIDTH  # 1.4145
-
-# HED model paths
-_HED_DIR = Path(__file__).parent.parent / "models" / "hed"
-_HED_PROTOTXT = _HED_DIR / "deploy.prototxt"
-_HED_MODEL = _HED_DIR / "hed_pretrained_bsds.caffemodel"
-_hed_net = None  # Lazy-loaded singleton
 
 
 class PreprocessingError(Exception):
@@ -105,6 +102,46 @@ def white_balance(img_bgr: np.ndarray) -> np.ndarray:
         return img_bgr
 
 
+def remove_shadows(img_bgr: np.ndarray) -> np.ndarray:
+    """
+    Rimuove ombre dalla foto stimando lo sfondo per canale.
+    Utile per foto con illuminazione laterale o ombra della mano.
+    Ottimizzato: stima sfondo su immagine ridotta, poi applica a full-res.
+    """
+    h, w = img_bgr.shape[:2]
+    # Downsample per velocizzare medianBlur (bottleneck)
+    scale = min(1.0, 800.0 / w)
+    if scale < 1.0:
+        small = cv2.resize(img_bgr, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
+    else:
+        small = img_bgr
+
+    result = np.zeros_like(img_bgr)
+    for c in range(3):
+        dilated = cv2.dilate(small[:, :, c], np.ones((7, 7), np.uint8))
+        bg_small = cv2.medianBlur(dilated, 21)
+        if scale < 1.0:
+            bg = cv2.resize(bg_small, (w, h), interpolation=cv2.INTER_LINEAR)
+        else:
+            bg = bg_small
+        diff = 255 - cv2.absdiff(img_bgr[:, :, c], bg)
+        result[:, :, c] = cv2.normalize(diff, None, 0, 255, cv2.NORM_MINMAX)
+    return result
+
+
+def check_image_quality(gray: np.ndarray):
+    """
+    Verifica qualità minima dell'immagine (risoluzione e nitidezza).
+    Raises PreprocessingError se sotto soglia.
+    """
+    h, w = gray.shape
+    if w < 800 or h < 1000:
+        raise PreprocessingError(f"Risoluzione troppo bassa ({w}x{h})")
+    blur = cv2.Laplacian(gray, cv2.CV_64F).var()
+    if blur < 80:
+        raise PreprocessingError(f"Foto sfocata (score={blur:.0f}, min=80)")
+
+
 def to_grayscale_via_lab(img_bgr: np.ndarray) -> np.ndarray:
     """
     Converte BGR in grayscale usando il canale L di LAB.
@@ -119,7 +156,7 @@ def to_grayscale_via_lab(img_bgr: np.ndarray) -> np.ndarray:
     l_channel = lab[:, :, 0]
 
     # CLAHE sul canale L: normalizza illuminazione non uniforme
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(16, 16))
     l_enhanced = clahe.apply(l_channel)
 
     return l_enhanced
@@ -135,9 +172,9 @@ def to_grayscale(img: np.ndarray) -> np.ndarray:
 def denoise(gray: np.ndarray) -> np.ndarray:
     """
     Riduce rumore fotografico mantenendo i bordi netti.
-    h=10 è il valore ottimale per foto da smartphone a 8-12 MP.
+    bilateralFilter: ~50ms vs fastNlMeansDenoising ~6000ms.
     """
-    return cv2.fastNlMeansDenoising(gray, h=10, templateWindowSize=7, searchWindowSize=21)
+    return cv2.bilateralFilter(gray, d=5, sigmaColor=75, sigmaSpace=75)
 
 
 def binarize_adaptive(gray: np.ndarray) -> np.ndarray:
@@ -194,251 +231,6 @@ def deskew(gray: np.ndarray) -> Tuple[np.ndarray, float]:
         borderMode=cv2.BORDER_REPLICATE
     )
     return rotated, angle
-
-
-def _load_hed_net():
-    """Carica il modello HED (lazy singleton)."""
-    global _hed_net
-    if _hed_net is None and _HED_MODEL.exists() and _HED_PROTOTXT.exists():
-        _hed_net = cv2.dnn.readNetFromCaffe(str(_HED_PROTOTXT), str(_HED_MODEL))
-    return _hed_net
-
-
-def _hed_edges(gray: np.ndarray) -> Optional[np.ndarray]:
-    """
-    Rileva bordi con HED (Holistically-Nested Edge Detection).
-    Produce edge map molto piu pulita di Canny su foto con sfondi complessi.
-    """
-    net = _load_hed_net()
-    if net is None:
-        return None
-
-    h, w = gray.shape
-    # HED vuole BGR, riconverti da gray
-    bgr = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
-
-    # Resize a dimensione standard per HED (larghezza 500px per velocita)
-    scale = 500.0 / w
-    inp = cv2.resize(bgr, (500, int(h * scale)))
-
-    blob = cv2.dnn.blobFromImage(inp, scalefactor=1.0, size=inp.shape[1::-1],
-                                  mean=(104.00698793, 116.66876762, 122.67891434),
-                                  swapRB=False, crop=False)
-    net.setInput(blob)
-    hed_out = net.forward()
-    hed_out = hed_out[0, 0]
-    hed_out = (255 * hed_out).astype(np.uint8)
-
-    # Resize back a dimensione originale
-    hed_out = cv2.resize(hed_out, (w, h))
-
-    # Threshold per ottenere edge binari
-    _, edges = cv2.threshold(hed_out, 50, 255, cv2.THRESH_BINARY)
-
-    # Dilata per collegare bordi interrotti
-    kernel = np.ones((3, 3), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=1)
-
-    return edges
-
-
-def _find_corners_from_edges(edges: np.ndarray, min_area: float) -> Optional[np.ndarray]:
-    """Trova il quadrilatero piu grande in una edge map."""
-    contours, _ = cv2.findContours(edges, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-    if not contours:
-        return None
-
-    contours = sorted(contours, key=cv2.contourArea, reverse=True)[:5]
-    for contour in contours:
-        if cv2.contourArea(contour) < min_area:
-            continue
-        peri = cv2.arcLength(contour, True)
-        for eps in [0.02, 0.04, 0.06, 0.08]:
-            approx = cv2.approxPolyDP(contour, eps * peri, True)
-            if len(approx) == 4:
-                pts = approx.reshape(4, 2).astype(np.float32)
-                return _order_points(pts)
-    return None
-
-
-def find_document_corners(gray: np.ndarray) -> Optional[np.ndarray]:
-    """
-    Trova i 4 angoli del documento nel frame fotografico.
-    Strategia multi-livello:
-      1. HED deep learning edge detection (piu robusto)
-      2. Canny classico + contorni
-      3. Fallback: soglia Otsu + morphology
-
-    Returns: array shape (4,2) con angoli [TL, TR, BR, BL] o None se non trovato
-    """
-    h, w = gray.shape
-    min_area = (w * h) * 0.1
-
-    # --- Strategia 1: HED Deep Learning edges ---
-    hed_edges = _hed_edges(gray)
-    if hed_edges is not None:
-        corners = _find_corners_from_edges(hed_edges, min_area)
-        if corners is not None:
-            return corners
-
-    # --- Strategia 2: Canny classico + approxPolyDP ---
-    blurred = cv2.GaussianBlur(gray, (5, 5), 0)
-    high_thresh, _ = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    low_thresh = high_thresh * 0.5
-    edges = cv2.Canny(blurred, low_thresh, high_thresh)
-    kernel = np.ones((3, 3), np.uint8)
-    edges = cv2.dilate(edges, kernel, iterations=1)
-
-    corners = _find_corners_from_edges(edges, min_area)
-    if corners is not None:
-        return corners
-
-    # --- Strategia 3: Soglia Otsu + morphology ---
-    _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    kernel_big = np.ones((5, 5), np.uint8)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel_big, iterations=3)
-
-    corners = _find_corners_from_edges(binary, min_area)
-    if corners is not None:
-        return corners
-
-    return None
-
-
-def _order_points(pts: np.ndarray) -> np.ndarray:
-    """
-    Ordina 4 punti come [top-left, top-right, bottom-right, bottom-left].
-    """
-    rect = np.zeros((4, 2), dtype=np.float32)
-    s = pts.sum(axis=1)
-    rect[0] = pts[np.argmin(s)]   # TL: somma minima
-    rect[2] = pts[np.argmax(s)]   # BR: somma massima
-    diff = np.diff(pts, axis=1)
-    rect[1] = pts[np.argmin(diff)]  # TR: diff minima
-    rect[3] = pts[np.argmax(diff)]  # BL: diff massima
-    return rect
-
-
-def correct_perspective(img: np.ndarray, corners: np.ndarray) -> np.ndarray:
-    """
-    Applica trasformazione prospettica per ottenere vista frontale del foglio.
-    Forza sempre output con aspect ratio A4 (1.4145) per garantire
-    compatibilita con le coordinate della griglia calibrate dal PDF.
-
-    Args:
-        img: immagine originale (BGR o grayscale)
-        corners: 4 angoli ordinati [TL, TR, BR, BL]
-    Returns: immagine raddrizzata a dimensioni A4 (TARGET_WIDTH x TARGET_HEIGHT)
-    """
-    # Output fisso A4: la griglia e calibrata su queste dimensioni esatte
-    dst = np.array([
-        [0, 0],
-        [TARGET_WIDTH - 1, 0],
-        [TARGET_WIDTH - 1, TARGET_HEIGHT - 1],
-        [0, TARGET_HEIGHT - 1]
-    ], dtype=np.float32)
-
-    M = cv2.getPerspectiveTransform(corners, dst)
-    return cv2.warpPerspective(img, M, (TARGET_WIDTH, TARGET_HEIGHT))
-
-
-def align_to_template(gray: np.ndarray, page: str = "page_4") -> Tuple[np.ndarray, bool, dict]:
-    """
-    Allinea la foto preprocessata al template PDF usando feature matching.
-    Strategia: SIFT con maschera estesa (header, footer, margini, bordi griglia)
-    + fallback AKAZE se SIFT non trova abbastanza match.
-
-    Args:
-        gray: immagine grayscale gia con prospettiva corretta
-        page: pagina del questionario ("page_4", "page_5", "page_6")
-
-    Returns:
-        (immagine_allineata, successo, info_dict)
-    """
-    page_to_file = {
-        "page_4": "cbcl1_page_4.png",
-        "page_5": "cbcl1_page_5.png",
-        "page_6": "cbcl1_page_6.png",
-    }
-
-    template_dir = Path(__file__).parent.parent / "data" / "pdf_pages"
-    template_file = template_dir / page_to_file.get(page, "cbcl1_page_4.png")
-    info = {"method": None, "inliers": 0, "good_matches": 0}
-
-    if not template_file.exists():
-        return gray, False, info
-
-    template = cv2.imread(str(template_file), cv2.IMREAD_GRAYSCALE)
-    if template is None:
-        return gray, False, info
-
-    template = cv2.resize(template, (gray.shape[1], gray.shape[0]))
-    h, w = gray.shape
-
-    # Maschera estesa: header, footer, margini, divisore centrale, bordi griglia
-    mask = np.zeros((h, w), dtype=np.uint8)
-    mask[0:int(h * 0.22), :] = 255                    # header + intestazione griglia
-    mask[int(h * 0.88):h, :] = 255                     # footer
-    mask[:, 0:int(w * 0.06)] = 255                     # margine sinistro (numeri item)
-    mask[:, int(w * 0.46):int(w * 0.55)] = 255         # divisore centrale tra colonne
-    mask[:, int(w * 0.94):] = 255                      # margine destro
-
-    def _try_match(detector, matcher, desc_name):
-        """Prova feature matching con un detector specifico."""
-        kp1, des1 = detector.detectAndCompute(template, mask)
-        kp2, des2 = detector.detectAndCompute(gray, mask)
-
-        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
-            return None, 0, 0
-
-        raw_matches = matcher.knnMatch(des1, des2, k=2)
-        good = [m for m, n in raw_matches if m.distance < 0.75 * n.distance]
-
-        if len(good) < 8:
-            return None, len(good), 0
-
-        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
-        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
-
-        # USAC_MAGSAC se disponibile, altrimenti RANSAC
-        try:
-            H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.USAC_MAGSAC, 3.0)
-        except (cv2.error, AttributeError):
-            H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 3.0)
-
-        inliers = int(mask_h.ravel().sum()) if mask_h is not None else 0
-
-        if H is None or inliers < 6:
-            return None, len(good), inliers
-
-        det = np.linalg.det(H[:2, :2])
-        if det < 0.3 or det > 3.0:
-            return None, len(good), inliers
-
-        return H, len(good), inliers
-
-    # --- Strategia 1: SIFT (piu accurato) ---
-    sift = cv2.SIFT_create(nfeatures=10000)
-    flann = cv2.FlannBasedMatcher(dict(algorithm=1, trees=5), dict(checks=80))
-    H, good_n, inliers = _try_match(sift, flann, "sift")
-
-    if H is not None:
-        aligned = cv2.warpPerspective(gray, H, (w, h))
-        info = {"method": "sift", "inliers": inliers, "good_matches": good_n}
-        return aligned, True, info
-
-    # --- Strategia 2: AKAZE fallback (piu robusto su immagini compresse) ---
-    akaze = cv2.AKAZE_create()
-    bf = cv2.BFMatcher(cv2.NORM_HAMMING)
-    H, good_n, inliers = _try_match(akaze, bf, "akaze")
-
-    if H is not None:
-        aligned = cv2.warpPerspective(gray, H, (w, h))
-        info = {"method": "akaze", "inliers": inliers, "good_matches": good_n}
-        return aligned, True, info
-
-    info = {"method": None, "inliers": inliers, "good_matches": good_n}
-    return gray, False, info
 
 
 def detect_grid_offsets(
@@ -544,48 +336,65 @@ def detect_grid_offsets(
     y_clusters = np.array(y_clusters)
     x_clusters = np.array(x_clusters)
 
-    # --- Step 3: Per ogni item, trova la linea orizzontale piu vicina ---
+    # --- Step 3: Calcola offset globale smooth (non per-item) ---
+    # Strategia: calcola la mediana dell'offset Y tra linee rilevate e attese,
+    # poi applica un singolo offset globale. Evita il problema di snappare
+    # piu items alla stessa linea.
     cell_h_rel = page_data["cell_height_rel"]
     cell_h_px = cell_h_rel * h
+    cell_w_px = page_data["cell_width_rel"] * w
 
-    for item_id, coords in items.items():
-        expected_y_px = coords["row_y"] * h
+    # Raccogli tutti i row_y attesi
+    expected_ys = sorted(set(coords["row_y"] for coords in items.values()))
+    expected_ys_px = [y * h for y in expected_ys]
 
-        # Trova le due linee orizzontali che racchiudono la riga
-        # (la riga dell'item si trova TRA due linee della griglia)
-        diffs = y_clusters - expected_y_px
-        above = y_clusters[diffs <= cell_h_px * 0.5]
-        below = y_clusters[diffs >= -cell_h_px * 0.5]
+    # Per ogni posizione Y attesa, trova la linea rilevata piu vicina
+    y_deltas = []
+    for ey_px in expected_ys_px:
+        dists = np.abs(y_clusters - ey_px)
+        nearest_idx = np.argmin(dists)
+        delta = y_clusters[nearest_idx] - ey_px
+        # Solo se il delta e ragionevole (< 1 altezza cella)
+        if abs(delta) < cell_h_px * 1.5:
+            y_deltas.append(delta)
 
-        if len(above) > 0 and len(below) > 0:
-            nearest_above = above[np.argmin(np.abs(above - expected_y_px))]
-            nearest_below = below[np.argmin(np.abs(below - expected_y_px))]
+    # Calcola offset Y globale come mediana dei delta
+    global_dy = np.median(y_deltas) / h if len(y_deltas) >= 3 else 0.0
 
-            # Correggi solo se la linea rilevata è vicina (< 2x altezza cella)
-            best_line = nearest_above if abs(nearest_above - expected_y_px) < abs(nearest_below - expected_y_px) else nearest_below
-            delta = best_line - expected_y_px
+    # Applica offset Y globale a tutti gli items
+    if abs(global_dy) > 0.001:
+        for item_id in items:
+            result["row_y_offsets"][item_id] = global_dy
 
-            if abs(delta) < cell_h_px * 2:
-                result["row_y_offsets"][item_id] = delta / h
-
-        # Offset X per colonne: trova linee verticali vicine alle colonne attese
-        if len(x_clusters) > 0:
-            col_offsets = {}
+    # Calcola offset X globale per ogni gruppo di colonne
+    # (colonna sinistra vs colonna destra del questionario)
+    if len(x_clusters) > 0:
+        # Raggruppa items per posizione X (sinistra ~0.06-0.14, destra ~0.54-0.62)
+        col_groups = {}
+        for item_id, coords in items.items():
             for col_key in ["col_0_x", "col_1_x", "col_2_x"]:
                 if col_key not in coords:
                     continue
                 expected_x_px = coords[col_key] * w
-                nearest_idx = np.argmin(np.abs(x_clusters - expected_x_px))
+                dists = np.abs(x_clusters - expected_x_px)
+                nearest_idx = np.argmin(dists)
                 delta_x = x_clusters[nearest_idx] - expected_x_px
-                cell_w_px = page_data["cell_width_rel"] * w
+                if abs(delta_x) < cell_w_px * 1.5:
+                    group_key = "left" if coords[col_key] < 0.4 else "right"
+                    col_groups.setdefault((group_key, col_key), []).append(delta_x / w)
 
-                if abs(delta_x) < cell_w_px * 2:
-                    col_offsets[col_key] = delta_x / w
+        # Mediana per gruppo
+        for (group, col_key), deltas in col_groups.items():
+            if len(deltas) >= 3:
+                median_dx = np.median(deltas)
+                if abs(median_dx) > 0.001:
+                    for item_id, coords in items.items():
+                        if col_key in coords:
+                            item_group = "left" if coords[col_key] < 0.4 else "right"
+                            if item_group == group:
+                                result["col_x_offsets"].setdefault(item_id, {})[col_key] = median_dx
 
-            if col_offsets:
-                result["col_x_offsets"][item_id] = col_offsets
-
-    result["success"] = len(result["row_y_offsets"]) > 5
+    result["success"] = abs(global_dy) > 0.001 or len(result["col_x_offsets"]) > 0
     return result
 
 
@@ -612,7 +421,7 @@ def enhance_contrast(gray: np.ndarray) -> np.ndarray:
     clipLimit=2.0 evita amplificazione del rumore.
     tileGridSize=(8,8) opera su zone di ~300px su A4 300dpi.
     """
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(16, 16))
     return clahe.apply(gray)
 
 
@@ -621,10 +430,14 @@ def preprocess_full_pipeline(
     debug: bool = False
 ) -> Tuple[np.ndarray, dict]:
     """
-    Esegue l'intera pipeline di preprocessing.
+    Esegue l'intera pipeline di preprocessing v2.1.
+
+    NOTE: Boundary detection e perspective correction sono gestiti esternamente
+    da boundary_detector.py (FASE 1-2 in app.py). Questa funzione assume
+    che l'input sia già perspective-corrected oppure raw.
 
     Args:
-        source: path file immagine o array numpy
+        source: path file immagine o array numpy (BGR o grayscale)
         debug: se True, salva immagini intermedie in /tmp/smart_ocr_debug/
 
     Returns:
@@ -634,7 +447,6 @@ def preprocess_full_pipeline(
         - 'original_size': (w, h) originale
         - 'final_size': (w, h) finale
         - 'deskew_angle': angolo correzione rotazione
-        - 'perspective_corrected': True/False
         - 'warnings': lista di avvisi
     """
     warnings = []
@@ -656,32 +468,29 @@ def preprocess_full_pipeline(
     # Step 2b: Rimozione inchiostro rosso
     img_bgr = remove_red_ink(img_bgr)
 
-    # Step 3: Conversione grayscale via LAB (illuminazione normalizzata)
+    # Step 3: Rimozione ombre
+    img_bgr = remove_shadows(img_bgr)
+    if debug:
+        _save_debug(img_bgr, "03_shadow_removed")
+
+    # Step 4: Conversione grayscale via LAB (illuminazione normalizzata)
     gray = to_grayscale_via_lab(img_bgr)
 
-    # Step 4: Denoising
+    # Step 5: Denoising (bilateralFilter, ~50ms)
     gray = denoise(gray)
     if debug:
-        _save_debug(gray, "03_denoised")
+        _save_debug(gray, "04_denoised")
 
-    # Step 5: Deskew
+    # Step 6: Deskew
     gray, angle = deskew(gray)
     metadata['deskew_angle'] = angle
     if abs(angle) > 15:
-        warnings.append(f"Rotazione elevata rilevata: {angle:.1f}°. Foto piu diritta migliora l'accuratezza.")
+        warnings.append(f"Rotazione elevata rilevata: {angle:.1f}. Foto piu diritta migliora l'accuratezza.")
 
-    # Step 6: Rileva angoli documento (HED + Canny + Otsu)
-    corners = find_document_corners(gray)
+    # Step 7: Normalizza risoluzione se necessario
+    gray = normalize_resolution(gray, TARGET_WIDTH)
 
-    if corners is not None:
-        gray = correct_perspective(gray, corners)
-        metadata['perspective_corrected'] = True
-    else:
-        metadata['perspective_corrected'] = False
-        warnings.append("Bordi documento non rilevati. Foto con piu contrasto tra foglio e sfondo migliora il risultato.")
-        gray = normalize_resolution(gray, TARGET_WIDTH)
-
-    # Step 7: Migliora contrasto
+    # Step 8: Migliora contrasto
     gray = enhance_contrast(gray)
 
     h1, w1 = gray.shape
@@ -690,7 +499,7 @@ def preprocess_full_pipeline(
     metadata['warnings'] = warnings
 
     if debug:
-        _save_debug(gray, "06_final")
+        _save_debug(gray, "08_final")
 
     return gray, metadata
 
