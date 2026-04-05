@@ -191,7 +191,7 @@ def classify_all_items_omr(
 # Baseline-subtracted classification (usa reference PDF per eliminare testo stampato)
 # ---------------------------------------------------------------------------
 
-BASELINE_MARK_DELTA = 0.06   # delta minimo sopra baseline per considerare marcato
+BASELINE_MARK_DELTA = 0.04   # delta minimo sopra baseline per considerare marcato
 BASELINE_AMBIGUITY = 0.6     # secondo delta deve essere < 60% del primo
 
 
