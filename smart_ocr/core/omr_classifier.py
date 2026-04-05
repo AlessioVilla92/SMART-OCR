@@ -188,6 +188,117 @@ def classify_all_items_omr(
 
 
 # ---------------------------------------------------------------------------
+# Baseline-subtracted classification (usa reference PDF per eliminare testo stampato)
+# ---------------------------------------------------------------------------
+
+BASELINE_MARK_DELTA = 0.06   # delta minimo sopra baseline per considerare marcato
+BASELINE_AMBIGUITY = 0.6     # secondo delta deve essere < 60% del primo
+
+
+def classify_item_baseline(
+    cells: Dict[str, np.ndarray],
+    ref_cells: Dict[str, np.ndarray]
+) -> dict:
+    """
+    Classifica un item sottraendo il baseline del testo stampato (dal reference PDF).
+
+    Per ogni cella: delta = ratio_foto - ratio_reference.
+    Il delta isola solo i mark scritti a mano, eliminando il rumore del testo stampato.
+
+    Args:
+        cells: {"0": cell_foto, "1": cell_foto, "2": cell_foto}
+        ref_cells: {"0": cell_ref, "1": cell_ref, "2": cell_ref}
+
+    Returns: dict con value, confidence, flag, raw_counts, deltas, method
+    """
+    counts = {}
+    ref_counts = {}
+    deltas = {}
+
+    for col in cells:
+        _, ratio = count_dark_pixels(cells[col])
+        counts[col] = ratio
+        if col in ref_cells:
+            _, ref_ratio = count_dark_pixels(ref_cells[col])
+            ref_counts[col] = ref_ratio
+            deltas[col] = ratio - ref_ratio
+        else:
+            ref_counts[col] = 0.0
+            deltas[col] = ratio
+
+    # Trova celle marcate: delta sopra soglia
+    marked = {col: d for col, d in deltas.items() if d > BASELINE_MARK_DELTA}
+
+    flag = None
+    value = None
+    marked_column = None
+    confidence = 0.0
+
+    if len(marked) == 0:
+        flag = "missing"
+
+    elif len(marked) == 1:
+        marked_column = list(marked.keys())[0]
+        value = int(marked_column)
+        # Confidence: quanto il delta è forte rispetto agli altri
+        max_delta = marked[marked_column]
+        other_deltas = [d for col, d in deltas.items() if col != marked_column]
+        max_other = max(other_deltas) if other_deltas else 0.0
+        confidence = min(1.0, max_delta / BASELINE_MARK_DELTA)
+        # Boost se le altre celle hanno delta negativo o molto basso
+        if max_other < 0.02:
+            confidence = min(1.0, confidence * 1.2)
+
+    else:
+        sorted_marks = sorted(marked.items(), key=lambda x: x[1], reverse=True)
+        best_col, best_delta = sorted_marks[0]
+        second_delta = sorted_marks[1][1]
+
+        if second_delta < best_delta * BASELINE_AMBIGUITY:
+            marked_column = best_col
+            value = int(best_col)
+            confidence = (best_delta - second_delta) / best_delta
+        else:
+            flag = "multiple_marks"
+
+    if value is not None and confidence < 0.3:
+        flag = "ambiguous"
+
+    return {
+        "marked_column": marked_column,
+        "value": value,
+        "confidence": round(confidence, 3),
+        "flag": flag,
+        "raw_counts": {col: round(ratio, 4) for col, ratio in counts.items()},
+        "deltas": {col: round(d, 4) for col, d in deltas.items()},
+        "method": "omr_baseline_subtracted"
+    }
+
+
+def classify_all_items_baseline(
+    all_cells: Dict[str, Dict[str, np.ndarray]],
+    all_ref_cells: Dict[str, Dict[str, np.ndarray]]
+) -> Dict[str, dict]:
+    """
+    Classifica tutti gli item con baseline subtraction dal reference PDF.
+
+    Args:
+        all_cells: celle dalla foto allineata
+        all_ref_cells: celle dal reference PDF (template pulito)
+
+    Returns: {item_id: classification_result}
+    """
+    results = {}
+    for item_id, cells in all_cells.items():
+        ref_cells = all_ref_cells.get(item_id, {})
+        if ref_cells:
+            results[item_id] = classify_item_baseline(cells, ref_cells)
+        else:
+            results[item_id] = classify_item_omr(cells)
+    return results
+
+
+# ---------------------------------------------------------------------------
 # PDF-optimized classification (Mode D)
 # ---------------------------------------------------------------------------
 # I PDF digitali hanno celle con numeri stampati (0, 1, 2) che producono

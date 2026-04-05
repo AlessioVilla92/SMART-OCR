@@ -28,7 +28,7 @@ from core.boundary_detector import detect_document_boundary, warp_to_a4, draw_bo
 from core.template_aligner import TemplateAligner
 from core.grid_extractor import extract_all_cells, visualize_grid_overlay
 from core.classifier import get_classifier
-from core.omr_classifier import classify_all_items_omr
+from core.omr_classifier import classify_all_items_omr, classify_all_items_baseline
 from core.scorer import build_score_report, report_to_csv, report_to_json, ALL_ITEMS
 from core.calibrator import get_calibration_status
 from style import inject_custom_css, render_header, glass_card, status_pill
@@ -229,7 +229,14 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
             for item_id, item_cells in cells_dict.items():
                 classification_results[item_id] = yolo_clf.predict_item_cells(item_cells)
         else:
-            classification_results = classify_all_items_omr(cells_dict)
+            # Usa baseline subtraction se alignment riuscito e reference disponibile
+            aligner_ref = get_aligner()
+            if align_info.get("aligned") and page in aligner_ref._references:
+                ref_img = aligner_ref._references[page]
+                ref_cells = extract_all_cells(ref_img, page)
+                classification_results = classify_all_items_baseline(cells_dict, ref_cells)
+            else:
+                classification_results = classify_all_items_omr(cells_dict)
 
     report = build_score_report(
         classification_results,
