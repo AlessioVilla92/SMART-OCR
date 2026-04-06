@@ -193,6 +193,31 @@ def classify_all_items_omr(
 
 BASELINE_MARK_DELTA = 0.04   # delta minimo sopra baseline per considerare marcato
 BASELINE_AMBIGUITY = 0.6     # secondo delta deve essere < 60% del primo
+LOCAL_ALIGN_PAD = 5           # pixel di padding per local alignment matchTemplate
+
+
+def _local_align_cell(cell: np.ndarray, ref_cell: np.ndarray) -> np.ndarray:
+    """
+    Allinea localmente una cella al suo reference con matchTemplate.
+
+    Compensa micro-shift di 1-5px causato da distorsione prospettica locale
+    non corretta dall'alignment SIFT globale.
+
+    Usa TM_CCOEFF_NORMED: il metodo piu robusto a variazioni di luminosita.
+    Costo: ~0.2ms per cella (trascurabile).
+    """
+    pad = LOCAL_ALIGN_PAD
+    cell_padded = cv2.copyMakeBorder(cell, pad, pad, pad, pad, cv2.BORDER_REPLICATE)
+    result = cv2.matchTemplate(cell_padded, ref_cell, cv2.TM_CCOEFF_NORMED)
+    _, _, _, max_loc = cv2.minMaxLoc(result)
+    dx = max_loc[0] - pad
+    dy = max_loc[1] - pad
+
+    if abs(dx) <= pad and abs(dy) <= pad and (dx != 0 or dy != 0):
+        M = np.float32([[1, 0, -dx], [0, 1, -dy]])
+        return cv2.warpAffine(cell, M, (cell.shape[1], cell.shape[0]),
+                              borderMode=cv2.BORDER_REPLICATE)
+    return cell
 
 
 def classify_item_baseline(
@@ -216,15 +241,20 @@ def classify_item_baseline(
     deltas = {}
 
     for col in cells:
-        _, ratio = count_dark_pixels(cells[col])
-        counts[col] = ratio
+        cell = cells[col]
         if col in ref_cells:
-            _, ref_ratio = count_dark_pixels(ref_cells[col])
+            ref_cell = ref_cells[col]
+            # Local alignment: compensa micro-shift da distorsione prospettica
+            cell = _local_align_cell(cell, ref_cell)
+            _, ratio = count_dark_pixels(cell)
+            _, ref_ratio = count_dark_pixels(ref_cell)
             ref_counts[col] = ref_ratio
             deltas[col] = ratio - ref_ratio
         else:
+            _, ratio = count_dark_pixels(cell)
             ref_counts[col] = 0.0
             deltas[col] = ratio
+        counts[col] = ratio
 
     # Trova celle marcate: delta sopra soglia
     marked = {col: d for col, d in deltas.items() if d > BASELINE_MARK_DELTA}
