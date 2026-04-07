@@ -47,15 +47,21 @@ def extract_cell(
     center_x_rel: float,
     center_y_rel: float,
     cell_w_rel: float,
-    cell_h_rel: float
+    cell_h_rel: float,
+    ref_img: np.ndarray = None
 ) -> np.ndarray:
     """
-    Ritaglia una singola cella dall'immagine.
+    Ritaglia una singola cella dall'immagine con auto-centering opzionale.
+
+    Se ref_img e fornito, estrae una finestra allargata e usa matchTemplate
+    per centrare la cella sul contenuto reale, compensando offset Y/X
+    causati da distorsione prospettica o calibrazione imprecisa.
 
     Args:
         img: immagine grayscale
         center_x_rel, center_y_rel: centro cella in coordinate relative (0-1)
         cell_w_rel, cell_h_rel: dimensioni cella in coordinate relative
+        ref_img: immagine reference per auto-centering (opzionale)
 
     Returns: cella ridimensionata a CELL_SIZE (64x64)
     """
@@ -66,21 +72,54 @@ def extract_cell(
     cw = max(int(cell_w_rel * w), 20)  # minimo 20px
     ch = max(int(cell_h_rel * h), 20)
 
-    x1 = max(0, cx - cw // 2)
-    y1 = max(0, cy - ch // 2)
-    x2 = min(w, x1 + cw)
-    y2 = min(h, y1 + ch)
+    if ref_img is not None and ref_img.shape == img.shape:
+        # Auto-centering: estrai finestra allargata +-20px e cerca il match migliore
+        pad = 20
+        x1_wide = max(0, cx - cw // 2 - pad)
+        y1_wide = max(0, cy - ch // 2 - pad)
+        x2_wide = min(w, cx + cw // 2 + pad)
+        y2_wide = min(h, cy + ch // 2 + pad)
+
+        wide_region = img[y1_wide:y2_wide, x1_wide:x2_wide]
+
+        # Cella reference alla coordinata nominale
+        rx1 = max(0, cx - cw // 2)
+        ry1 = max(0, cy - ch // 2)
+        rx2 = min(w, rx1 + cw)
+        ry2 = min(h, ry1 + ch)
+        ref_cell = ref_img[ry1:ry2, rx1:rx2]
+
+        if (wide_region.shape[0] >= ref_cell.shape[0] and
+                wide_region.shape[1] >= ref_cell.shape[1] and
+                ref_cell.shape[0] > 0 and ref_cell.shape[1] > 0):
+            result = cv2.matchTemplate(wide_region, ref_cell, cv2.TM_CCOEFF_NORMED)
+            _, _, _, max_loc = cv2.minMaxLoc(result)
+
+            # Posizione ottimale nella finestra allargata
+            best_x = x1_wide + max_loc[0]
+            best_y = y1_wide + max_loc[1]
+
+            x1 = max(0, best_x)
+            y1 = max(0, best_y)
+            x2 = min(w, x1 + cw)
+            y2 = min(h, y1 + ch)
+        else:
+            x1 = max(0, cx - cw // 2)
+            y1 = max(0, cy - ch // 2)
+            x2 = min(w, x1 + cw)
+            y2 = min(h, y1 + ch)
+    else:
+        x1 = max(0, cx - cw // 2)
+        y1 = max(0, cy - ch // 2)
+        x2 = min(w, x1 + cw)
+        y2 = min(h, y1 + ch)
 
     cell = img[y1:y2, x1:x2]
 
     if cell.size == 0:
-        # Cella vuota - ritorna array bianco
         return np.full(CELL_SIZE, 255, dtype=np.uint8)
 
-    # Ridimensiona a dimensione standard per HOG
     cell_resized = cv2.resize(cell, CELL_SIZE, interpolation=cv2.INTER_AREA)
-
-    # Normalizzazione contrasto per-cella
     cell_resized = _cell_clahe.apply(cell_resized)
 
     return cell_resized
@@ -89,7 +128,8 @@ def extract_cell(
 def extract_all_cells(
     img: np.ndarray,
     page: str = "page_4",
-    offsets: Optional[dict] = None
+    offsets: Optional[dict] = None,
+    ref_img: np.ndarray = None
 ) -> Dict[str, Dict[str, np.ndarray]]:
     """
     Estrae tutte le celle per tutti gli item della pagina specificata.
@@ -98,14 +138,14 @@ def extract_all_cells(
         img: immagine grayscale preprocessata
         page: pagina del questionario
         offsets: correzioni locali da detect_grid_offsets()
-                 {"row_y_offsets": {item_id: dy}, "col_x_offsets": {item_id: {col_key: dx}}, "success": bool}
+        ref_img: immagine reference per auto-centering (opzionale).
+                 Se fornita, ogni cella viene estratta con finestra allargata
+                 e ri-centrata con matchTemplate sul contenuto reale.
 
     Returns:
         {
             "1": {"0": cell_img_64x64, "1": cell_img_64x64, "2": cell_img_64x64},
             "2": {...},
-            ...
-            "56a": {...},  # sub-items
             ...
         }
     """
@@ -123,7 +163,6 @@ def extract_all_cells(
     for item_id, coords in items.items():
         row_y = coords["row_y"]
 
-        # Applica offset Y per-riga
         if item_id in row_offsets:
             row_y += row_offsets[item_id]
 
@@ -135,11 +174,11 @@ def extract_all_cells(
                 continue
             col_x = coords[col_key]
 
-            # Applica offset X per-colonna
             if col_key in item_col_offsets:
                 col_x += item_col_offsets[col_key]
 
-            cells[col_label] = extract_cell(img, col_x, row_y, cell_w, cell_h)
+            cells[col_label] = extract_cell(img, col_x, row_y, cell_w, cell_h,
+                                            ref_img=ref_img)
 
         result[item_id] = cells
 

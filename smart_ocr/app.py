@@ -202,7 +202,10 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
     # FASE 5: Estrazione celle e classificazione
     step = "2/3" if method == "pdf" else "5/5"
     with st.spinner(f"{step} — Estrazione e classificazione celle ({method.upper()})..."):
-        cells_dict = extract_all_cells(gray, page)
+        # Passa reference per auto-centering se disponibile
+        aligner_ref = get_aligner()
+        ref_for_extraction = aligner_ref._references.get(page) if align_info.get("aligned") else None
+        cells_dict = extract_all_cells(gray, page, ref_img=ref_for_extraction)
 
         if method == "pdf":
             classification_results = classify_all_items_pdf(
@@ -234,10 +237,8 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
         # Strategia combinata: YOLO + Baseline fallback per massima copertura
         # Se alignment riuscito e reference disponibile, usa baseline per recuperare
         # items che il metodo primario ha flaggato come missing/multiple_marks
-        aligner_ref = get_aligner()
-        if align_info.get("aligned") and page in aligner_ref._references:
-            ref_img = aligner_ref._references[page]
-            ref_cells = extract_all_cells(ref_img, page)
+        if align_info.get("aligned") and ref_for_extraction is not None:
+            ref_cells = extract_all_cells(ref_for_extraction, page)
             baseline_results = classify_all_items_baseline(cells_dict, ref_cells)
 
             for item_id, primary in classification_results.items():
