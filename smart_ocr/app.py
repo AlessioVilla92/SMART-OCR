@@ -229,14 +229,28 @@ def process_uploaded_image(uploaded_file, page: str, method: str, debug: bool = 
             for item_id, item_cells in cells_dict.items():
                 classification_results[item_id] = yolo_clf.predict_item_cells(item_cells)
         else:
-            # Usa baseline subtraction se alignment riuscito e reference disponibile
-            aligner_ref = get_aligner()
-            if align_info.get("aligned") and page in aligner_ref._references:
-                ref_img = aligner_ref._references[page]
-                ref_cells = extract_all_cells(ref_img, page)
-                classification_results = classify_all_items_baseline(cells_dict, ref_cells)
-            else:
-                classification_results = classify_all_items_omr(cells_dict)
+            classification_results = classify_all_items_omr(cells_dict)
+
+        # Strategia combinata: YOLO + Baseline fallback per massima copertura
+        # Se alignment riuscito e reference disponibile, usa baseline per recuperare
+        # items che il metodo primario ha flaggato come missing/multiple_marks
+        aligner_ref = get_aligner()
+        if align_info.get("aligned") and page in aligner_ref._references:
+            ref_img = aligner_ref._references[page]
+            ref_cells = extract_all_cells(ref_img, page)
+            baseline_results = classify_all_items_baseline(cells_dict, ref_cells)
+
+            for item_id, primary in classification_results.items():
+                fallback = baseline_results.get(item_id, {})
+                pv = primary.get("value")
+                pf = primary.get("flag")
+                fv = fallback.get("value")
+                ff = fallback.get("flag")
+
+                # Se il metodo primario ha fallito, usa baseline come fallback
+                if pv is None or pf in ("missing", "multiple_marks", "ambiguous"):
+                    if fv is not None and ff in (None, "low_confidence", "multiple_marks"):
+                        classification_results[item_id] = fallback
 
     report = build_score_report(
         classification_results,

@@ -256,43 +256,58 @@ def classify_item_baseline(
             deltas[col] = ratio
         counts[col] = ratio
 
-    # Trova celle marcate: delta sopra soglia
-    marked = {col: d for col, d in deltas.items() if d > BASELINE_MARK_DELTA}
+    # REGOLA FONDAMENTALE: "missing" SOLO se tutte e 3 le celle sono completamente
+    # vuote (nessun segno aggiunto rispetto al reference). Se c'è anche il minimo
+    # segno su una cella, quella è la risposta. Winner-takes-all.
 
     flag = None
     value = None
     marked_column = None
     confidence = 0.0
 
+    # Ordina per delta decrescente
+    sorted_deltas = sorted(deltas.items(), key=lambda x: x[1], reverse=True)
+    best_col, best_delta = sorted_deltas[0]
+    second_delta = sorted_deltas[1][1] if len(sorted_deltas) > 1 else 0.0
+
+    # Celle sopra soglia forte
+    marked = {col: d for col, d in deltas.items() if d > BASELINE_MARK_DELTA}
+
     if len(marked) == 0:
-        flag = "missing"
+        # Nessuna cella sopra soglia — ma c'è qualche segno?
+        max_positive = max((d for d in deltas.values() if d > 0), default=0)
+        if max_positive > 0.01:
+            # C'è un segno, anche se leggero → prendi la cella col delta più alto
+            marked_column = best_col
+            value = int(best_col)
+            confidence = min(1.0, best_delta / BASELINE_MARK_DELTA)
+            flag = "low_confidence"
+        else:
+            # Tutte le celle hanno delta <= 0.01: genuinamente vuoto
+            flag = "missing"
 
     elif len(marked) == 1:
         marked_column = list(marked.keys())[0]
         value = int(marked_column)
-        # Confidence: quanto il delta è forte rispetto agli altri
         max_delta = marked[marked_column]
         other_deltas = [d for col, d in deltas.items() if col != marked_column]
         max_other = max(other_deltas) if other_deltas else 0.0
         confidence = min(1.0, max_delta / BASELINE_MARK_DELTA)
-        # Boost se le altre celle hanno delta negativo o molto basso
         if max_other < 0.02:
             confidence = min(1.0, confidence * 1.2)
 
     else:
-        sorted_marks = sorted(marked.items(), key=lambda x: x[1], reverse=True)
-        best_col, best_delta = sorted_marks[0]
-        second_delta = sorted_marks[1][1]
-
+        # Multiple marks sopra soglia — winner-takes-all se uno domina
         if second_delta < best_delta * BASELINE_AMBIGUITY:
             marked_column = best_col
             value = int(best_col)
             confidence = (best_delta - second_delta) / best_delta
         else:
+            # Due celle con delta simile: prendi comunque la più alta
+            marked_column = best_col
+            value = int(best_col)
+            confidence = (best_delta - second_delta) / best_delta
             flag = "multiple_marks"
-
-    if value is not None and confidence < 0.3:
-        flag = "ambiguous"
 
     return {
         "marked_column": marked_column,
