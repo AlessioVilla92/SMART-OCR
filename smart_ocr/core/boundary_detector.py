@@ -68,6 +68,11 @@ def detect_document_boundary(img: np.ndarray) -> Tuple[np.ndarray, float, str]:
     if corners is not None:
         return corners, conf, "hough_lines"
 
+    # L4: GrabCut (lento ~5s, ultimo fallback per sfondo chiaro)
+    corners, conf = _detect_by_grabcut(img)
+    if corners is not None:
+        return corners, conf, "grabcut"
+
     raise BoundaryDetectionError(
         "Impossibile rilevare i bordi del foglio. "
         "Fotografare su superficie scura con tutti e 4 i bordi visibili."
@@ -203,6 +208,54 @@ def _detect_by_hough(gray, h, w):
     corners = np.array([[left, top], [right, top],
                         [right, bottom], [left, bottom]], dtype=np.float32)
     return corners, 0.5
+
+
+def _detect_by_grabcut(img):
+    """L4: GrabCut foreground extraction — lento (~5s) ma robusto su sfondo chiaro.
+    Separa il foglio dallo sfondo usando segmentazione GMM iterativa.
+    Funziona dove threshold fallisce (foglio bianco su scrivania chiara)."""
+    h, w = img.shape[:2]
+    margin_x = int(w * 0.03)
+    margin_y = int(h * 0.03)
+    rect = (margin_x, margin_y, w - 2 * margin_x, h - 2 * margin_y)
+
+    mask = np.zeros((h, w), np.uint8)
+    bgd = np.zeros((1, 65), np.float64)
+    fgd = np.zeros((1, 65), np.float64)
+
+    try:
+        cv2.grabCut(img, mask, rect, bgd, fgd, 3, cv2.GC_INIT_WITH_RECT)
+    except cv2.error:
+        return None, 0.0
+
+    fg_mask = np.where((mask == 2) | (mask == 0), 0, 1).astype('uint8')
+
+    k = max(10, min(w, h) // 50)
+    kernel = np.ones((k, k), np.uint8)
+    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, kernel)
+    fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, kernel)
+
+    contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not contours:
+        return None, 0.0
+
+    biggest = max(contours, key=cv2.contourArea)
+    area_pct = cv2.contourArea(biggest) / (w * h)
+    if area_pct < 0.2:
+        return None, 0.0
+
+    for eps in [0.01, 0.02, 0.03, 0.04, 0.05]:
+        peri = cv2.arcLength(biggest, True)
+        approx = cv2.approxPolyDP(biggest, eps * peri, True)
+        if len(approx) == 4:
+            corners = _order_points(approx.reshape(4, 2).astype(np.float32))
+            ratio = _compute_aspect_ratio(corners)
+            if 1.1 < ratio < 1.65:
+                conf = min(0.85, area_pct * (1.0 - abs(ratio - 1.414) / 1.414))
+                return corners, conf
+            break
+
+    return None, 0.0
 
 
 def warp_to_a4(img, corners):
