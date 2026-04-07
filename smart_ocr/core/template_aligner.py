@@ -127,9 +127,13 @@ class TemplateAligner:
             warped = cv2.warpPerspective(gray, H, (w, h))
             info.update(method="sift", good_matches=good_n, inliers=inliers, aligned=True)
 
-            # ECC refinement a full-res
+            # ECC globale refinement
             aligned, ecc_ok = self._ecc_refine(reference, warped)
             info["ecc_success"] = ecc_ok
+
+            # Multi-Region ECC: corregge distorsione prospettica locale
+            aligned = self._multi_region_ecc(aligned, reference)
+
             return aligned, info
 
         # --- Strategia 2: AKAZE fallback su immagine ridotta ---
@@ -142,6 +146,10 @@ class TemplateAligner:
 
             aligned, ecc_ok = self._ecc_refine(reference, warped)
             info["ecc_success"] = ecc_ok
+
+            # Multi-Region ECC
+            aligned = self._multi_region_ecc(aligned, reference)
+
             return aligned, info
 
         # Nessun match sufficiente
@@ -232,6 +240,66 @@ class TemplateAligner:
             return None, len(good), inliers
 
         return H, len(good), inliers
+
+    def _multi_region_ecc(self, src: np.ndarray, reference: np.ndarray,
+                          grid_rows: int = 4, grid_cols: int = 2) -> np.ndarray:
+        """
+        Multi-Region ECC: divide l'immagine in una griglia NxM e applica
+        ECC locale a ciascuna regione per correggere distorsione prospettica locale.
+
+        Una singola homography globale non corregge la distorsione locale
+        (es. foglio curvo o prospettiva non corretta). Dividendo in regioni
+        e allineando ciascuna localmente, compensiamo lo shift variabile.
+
+        Griglia 4x2 = 8 regioni, ~700ms totale su 2480x3509.
+        """
+        h, w = src.shape
+        result = src.copy()
+
+        for r in range(grid_rows):
+            for c in range(grid_cols):
+                y1 = int(r * h / grid_rows)
+                y2 = int((r + 1) * h / grid_rows)
+                x1 = int(c * w / grid_cols)
+                x2 = int((c + 1) * w / grid_cols)
+
+                # Margine overlap per contesto
+                margin = 30
+                y1m = max(0, y1 - margin)
+                y2m = min(h, y2 + margin)
+                x1m = max(0, x1 - margin)
+                x2m = min(w, x2 + margin)
+
+                src_region = src[y1m:y2m, x1m:x2m]
+                ref_region = reference[y1m:y2m, x1m:x2m]
+
+                # ECC su versione ridotta per velocita
+                scale = 0.5
+                src_small = cv2.resize(src_region, None, fx=scale, fy=scale)
+                ref_small = cv2.resize(ref_region, None, fx=scale, fy=scale)
+
+                try:
+                    warp_matrix = np.eye(2, 3, dtype=np.float32)
+                    criteria = (cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 30, 1e-3)
+                    _, warp_matrix = cv2.findTransformECC(
+                        ref_small, src_small, warp_matrix,
+                        cv2.MOTION_EUCLIDEAN, criteria
+                    )
+                    # Scala traslazione a full-res
+                    warp_matrix[0, 2] /= scale
+                    warp_matrix[1, 2] /= scale
+
+                    inner = src[y1:y2, x1:x2]
+                    aligned_inner = cv2.warpAffine(
+                        inner, warp_matrix, (x2 - x1, y2 - y1),
+                        flags=cv2.INTER_LINEAR + cv2.WARP_INVERSE_MAP,
+                        borderMode=cv2.BORDER_REPLICATE
+                    )
+                    result[y1:y2, x1:x2] = aligned_inner
+                except cv2.error:
+                    pass  # ECC non converge su questa regione, mantieni originale
+
+        return result
 
     def _ecc_refine(self, reference: np.ndarray, warped: np.ndarray) -> Tuple[np.ndarray, bool]:
         """
