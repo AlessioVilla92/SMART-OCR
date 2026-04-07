@@ -193,7 +193,7 @@ def classify_all_items_omr(
 
 BASELINE_MARK_DELTA = 0.04   # delta minimo sopra baseline per considerare marcato
 BASELINE_AMBIGUITY = 0.6     # secondo delta deve essere < 60% del primo
-LOCAL_ALIGN_PAD = 5           # pixel di padding per local alignment matchTemplate
+LOCAL_ALIGN_PAD = 8           # pixel di padding per local alignment matchTemplate
 
 
 def _local_align_cell(cell: np.ndarray, ref_cell: np.ndarray) -> np.ndarray:
