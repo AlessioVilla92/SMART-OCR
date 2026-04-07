@@ -31,12 +31,18 @@ _MATCH_WIDTH = 800
 class TemplateAligner:
     """Allinea foto di questionari CBCL al template PDF di riferimento."""
 
+    # Soglia minima di matches per accettare alignment con maschera.
+    # Se sotto questa soglia, riprova senza maschera con piu features.
+    _MIN_MATCHES_MASKED = 50
+
     def __init__(self):
         self._references: Dict[str, np.ndarray] = {}           # full-res
         self._ref_small: Dict[str, np.ndarray] = {}             # ridotta
-        self._ref_keypoints: Dict[str, tuple] = {}              # (kp, des) cached
+        self._ref_keypoints: Dict[str, tuple] = {}              # (kp, des) cached con maschera
+        self._ref_keypoints_nomask: Dict[str, tuple] = {}       # (kp, des) cached senza maschera
         self._scale_factors: Dict[str, float] = {}              # fattore scala
         self._sift = cv2.SIFT_create(nfeatures=2000)
+        self._sift_big = cv2.SIFT_create(nfeatures=5000)
         self._flann = cv2.FlannBasedMatcher(
             dict(algorithm=1, trees=5),
             dict(checks=50)
@@ -74,13 +80,17 @@ class TemplateAligner:
         self._ref_small[page_key] = ref_small
         self._scale_factors[page_key] = scale
 
-        # Pre-calcola keypoints sulla versione ridotta
+        # Pre-calcola keypoints sulla versione ridotta (con maschera)
         sh, sw = ref_small.shape
         mask = self._build_structural_mask(sh, sw)
         kp, des = self._sift.detectAndCompute(ref_small, mask)
         self._ref_keypoints[page_key] = (kp, des)
 
-        logger.info(f"Reference caricato: {page_key} ({w}x{h}, small={sw}x{sh}, {len(kp)} kp)")
+        # Anche senza maschera con piu features (fallback per foto difficili)
+        kp_nm, des_nm = self._sift_big.detectAndCompute(ref_small, None)
+        self._ref_keypoints_nomask[page_key] = (kp_nm, des_nm)
+
+        logger.info(f"Reference caricato: {page_key} ({w}x{h}, {len(kp)} kp masked, {len(kp_nm)} kp nomask)")
 
     def align(self, gray: np.ndarray, page_key: str) -> Tuple[np.ndarray, dict]:
         """
@@ -119,37 +129,60 @@ class TemplateAligner:
         sh, sw = gray_small.shape
         mask_small = self._build_structural_mask(sh, sw)
 
-        # --- Strategia 1: SIFT su immagine ridotta ---
+        # --- Strategia 1: SIFT con maschera strutturale ---
         H_small, good_n, inliers = self._try_sift_cached(page_key, gray_small, mask_small)
-        if H_small is not None:
-            # Scala homography a full-res
+        if H_small is not None and good_n >= self._MIN_MATCHES_MASKED:
             H = self._scale_homography(H_small, scale)
             warped = cv2.warpPerspective(gray, H, (w, h))
             info.update(method="sift", good_matches=good_n, inliers=inliers, aligned=True)
-
-            # ECC globale refinement
             aligned, ecc_ok = self._ecc_refine(reference, warped)
             info["ecc_success"] = ecc_ok
-
-            # Multi-Region ECC: corregge distorsione prospettica locale
             aligned = self._multi_region_ecc(aligned, reference)
-
             return aligned, info
 
-        # --- Strategia 2: AKAZE fallback su immagine ridotta ---
+        # --- Strategia 1b: SIFT senza maschera, piu features (foto difficili) ---
+        # Quando la maschera e troppo restrittiva (angolo/illuminazione diversi)
+        best_masked = (H_small, good_n, inliers)  # salva risultato masked
+        H_nm, good_nm, inliers_nm = self._try_sift_nomask(page_key, gray_small)
+
+        # Raccogli candidati e scegli il migliore per diff col reference
+        candidates = []
+        diff_noalign = cv2.absdiff(reference, gray).mean()
+
+        if best_masked[0] is not None:
+            H_m = self._scale_homography(best_masked[0], scale)
+            w_m = cv2.warpPerspective(gray, H_m, (w, h))
+            d_m = cv2.absdiff(reference, w_m).mean()
+            candidates.append(('sift', w_m, d_m, best_masked[1], best_masked[2]))
+
+        if H_nm is not None:
+            H_n = self._scale_homography(H_nm, scale)
+            w_n = cv2.warpPerspective(gray, H_n, (w, h))
+            d_n = cv2.absdiff(reference, w_n).mean()
+            candidates.append(('sift_nomask', w_n, d_n, good_nm, inliers_nm))
+
+        if candidates:
+            # Scegli il candidato con diff minore, ma solo se migliora rispetto a no-alignment
+            best = min(candidates, key=lambda x: x[2])
+            if best[2] < diff_noalign:
+                warped = best[1]
+                info.update(method=best[0], good_matches=best[3],
+                            inliers=best[4], aligned=True)
+                aligned, ecc_ok = self._ecc_refine(reference, warped)
+                info["ecc_success"] = ecc_ok
+                aligned = self._multi_region_ecc(aligned, reference)
+                return aligned, info
+
+        # --- Strategia 2: AKAZE fallback ---
         ref_small = self._ref_small[page_key]
         H_small, good_n, inliers = self._try_akaze(ref_small, gray_small, mask_small)
         if H_small is not None:
             H = self._scale_homography(H_small, scale)
             warped = cv2.warpPerspective(gray, H, (w, h))
             info.update(method="akaze", good_matches=good_n, inliers=inliers, aligned=True)
-
             aligned, ecc_ok = self._ecc_refine(reference, warped)
             info["ecc_success"] = ecc_ok
-
-            # Multi-Region ECC
             aligned = self._multi_region_ecc(aligned, reference)
-
             return aligned, info
 
         # Nessun match sufficiente
@@ -173,6 +206,40 @@ class TemplateAligner:
         mask[:, int(w * 0.46):int(w * 0.55)] = 255           # divisore centrale
         mask[:, int(w * 0.94):] = 255                        # margine destro
         return mask
+
+    def _try_sift_nomask(self, page_key, gray_small):
+        """SIFT senza maschera con piu features — fallback per foto difficili."""
+        if page_key not in self._ref_keypoints_nomask:
+            return None, 0, 0
+        kp1, des1 = self._ref_keypoints_nomask[page_key]
+        kp2, des2 = self._sift_big.detectAndCompute(gray_small, None)
+
+        if des1 is None or des2 is None or len(kp1) < 10 or len(kp2) < 10:
+            return None, 0, 0
+
+        raw_matches = self._flann.knnMatch(des1, des2, k=2)
+        good = [m for m, n in raw_matches if m.distance < 0.75 * n.distance]
+
+        if len(good) < 8:
+            return None, len(good), 0
+
+        src_pts = np.float32([kp1[m.queryIdx].pt for m in good]).reshape(-1, 1, 2)
+        dst_pts = np.float32([kp2[m.trainIdx].pt for m in good]).reshape(-1, 1, 2)
+
+        try:
+            H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.USAC_MAGSAC, 3.0)
+        except (cv2.error, AttributeError):
+            H, mask_h = cv2.findHomography(dst_pts, src_pts, cv2.RANSAC, 3.0)
+
+        inliers = int(mask_h.ravel().sum()) if mask_h is not None else 0
+        if H is None or inliers < 6:
+            return None, len(good), inliers
+
+        det = np.linalg.det(H[:2, :2])
+        if det < 0.3 or det > 3.0:
+            return None, len(good), inliers
+
+        return H, len(good), inliers
 
     def _try_sift_cached(self, page_key, gray_small, mask):
         """SIFT con keypoints reference cached."""
