@@ -4,16 +4,23 @@ pipeline/engine.py
 Orchestratore multi-mode: coordina preprocessing → estrazione → classificazione → scoring.
 Interfaccia unificata per Mode A (SVM), Mode B (YOLO), Mode C (Ensemble), Mode D (PDF).
 
-Uso da app.py:
+Pipeline completa (5 fasi per foto):
+1. Boundary detection + validazione
+2. Perspective correction A4 (2480×3508)
+3. Preprocessing (white balance, shadow removal, denoise, CLAHE)
+4. SIFT+ECC alignment al template PDF
+5. Classificazione celle + baseline fallback
+
+Uso:
     from pipeline.engine import OCREngine
     from config import ClassificationMode
 
-    engine = OCREngine(ClassificationMode.MODE_A_SVM)
-    report = engine.process_page(image_path, page, debug=False)
+    engine = OCREngine(ClassificationMode.MODE_C_ENSEMBLE)
+    report = engine.process_page("foto.jpg", page="page_4")
 
     # Per PDF digitali:
     engine = OCREngine(ClassificationMode.MODE_D_PDF)
-    report = engine.process_page(gray_array, page, debug=False)
+    report = engine.process_page(gray_array, page="page_4")
 """
 
 import time
@@ -26,26 +33,60 @@ import sys
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import Config, ClassificationMode
-from core.preprocessor import preprocess_full_pipeline, align_to_template, detect_grid_offsets
+from core.preprocessor import preprocess_full_pipeline, load_image
+from core.boundary_detector import detect_document_boundary, warp_to_a4
+from core.template_aligner import TemplateAligner
 from core.grid_extractor import extract_all_cells, visualize_grid_overlay
-from core.omr_classifier import classify_all_items_omr, classify_all_items_pdf
+from core.omr_classifier import classify_all_items_omr, classify_all_items_pdf, classify_all_items_baseline
 from core.scorer import build_score_report
 
 
 # Target A4 300dpi
 _TARGET_W, _TARGET_H = 2480, 3508
 
+# Singleton TemplateAligner (caricato una volta, riusato)
+_aligner: Optional[TemplateAligner] = None
+
+# Cache preprocessing: evita ricalcolo SIFT su stessa immagine/pagina.
+# Chiave: (path_assoluto, page) → (gray, align_info, ref, cells_dict, ref_cells)
+_preprocess_cache: dict = {}
+
+
+def _get_aligner() -> TemplateAligner:
+    """Singleton TemplateAligner con reference cached."""
+    global _aligner
+    if _aligner is None:
+        _aligner = TemplateAligner()
+        for page in ["page_4", "page_5", "page_6"]:
+            try:
+                _aligner.load_reference(page)
+            except FileNotFoundError:
+                pass
+    return _aligner
+
 
 class OCREngine:
     """
     Interfaccia unificata per tutte le modalita.
     Cambiare modalita e trasparente: stessa API, motore diverso.
+
+    Pipeline completa con tutte le migliorie:
+    - Boundary detection con validazione (scarta bordi immagine, conf < 0.5)
+    - SIFT+ECC alignment al template
+    - Auto-centering celle via ref_img
+    - Baseline fallback per recupero items falliti
     """
 
     def __init__(self, mode: ClassificationMode = Config.DEFAULT_MODE):
         self.mode = mode
         self._classifier = None
         self._fallback_reason = None
+
+    @staticmethod
+    def clear_cache():
+        """Svuota cache preprocessing (utile tra sessioni diverse)."""
+        global _preprocess_cache
+        _preprocess_cache.clear()
 
     def _load_classifier(self):
         """
@@ -55,7 +96,6 @@ class OCREngine:
         self._fallback_reason = None
 
         if self.mode == ClassificationMode.MODE_D_PDF:
-            # PDF mode: usa OMR ottimizzato, nessun modello da caricare
             self._classifier = None
             return "pdf"
 
@@ -100,13 +140,10 @@ class OCREngine:
         """Cambia modalita a runtime senza riavviare."""
         if new_mode != self.mode:
             self.mode = new_mode
-            self._classifier = None  # Force reload
+            self._classifier = None
 
     def get_active_method(self) -> str:
-        """
-        Ritorna il metodo effettivamente attivo.
-        Returns: "svm", "yolo", "ensemble", "pdf", o "omr"
-        """
+        """Ritorna il metodo effettivamente attivo."""
         method = self._load_classifier()
         return method
 
@@ -117,16 +154,125 @@ class OCREngine:
 
     @staticmethod
     def _preprocess_pdf_page(gray_image: np.ndarray) -> np.ndarray:
-        """
-        Preprocessing leggero per pagine PDF digitali.
-        Niente prospettiva/deskew (gia perfette), solo resize a target A4.
-        """
+        """Preprocessing leggero per pagine PDF digitali (solo resize)."""
         if gray_image.shape != (_TARGET_H, _TARGET_W):
             gray_image = cv2.resize(
                 gray_image, (_TARGET_W, _TARGET_H),
                 interpolation=cv2.INTER_AREA
             )
         return gray_image
+
+    @staticmethod
+    def _preprocess_photo(image_path_or_array, page: str, debug: bool = False) -> tuple:
+        """
+        Pipeline completa preprocessing foto (fasi 1-4).
+        Risultati cached per path+page: stessa immagine preprocessata una sola volta
+        (evita variazioni SIFT/RANSAC tra chiamate successive).
+
+        Returns:
+            (gray, align_info, ref_for_extraction, meta)
+        """
+        global _preprocess_cache
+
+        # Cache key: solo per file path (non per numpy array)
+        cache_key = None
+        if not isinstance(image_path_or_array, np.ndarray):
+            cache_key = (str(Path(str(image_path_or_array)).resolve()), page)
+            if cache_key in _preprocess_cache:
+                return _preprocess_cache[cache_key]
+
+        meta = {}
+
+        # Fase 1: Carica immagine
+        if isinstance(image_path_or_array, np.ndarray):
+            img = image_path_or_array
+            if len(img.shape) == 2:
+                # Grayscale array — skip boundary detection, go straight to preprocessing
+                gray, preprocess_meta = preprocess_full_pipeline(img, debug=debug)
+                meta.update(preprocess_meta)
+                aligner = _get_aligner()
+                aligned, align_info = aligner.align(gray, page)
+                if align_info.get("aligned"):
+                    gray = aligned
+                ref = aligner._references.get(page) if align_info.get("aligned") else None
+                meta['sift_aligned'] = align_info.get("aligned", False)
+                return gray, align_info, ref, meta
+        else:
+            img = load_image(str(image_path_or_array))
+
+        h_img, w_img = img.shape[:2]
+        meta['original_size'] = (w_img, h_img)
+
+        # Fase 2: Boundary detection con validazione
+        corners = None
+        try:
+            c, conf, det_method = detect_document_boundary(img)
+            margin = 5
+            on_edge = any(
+                pt[0] < margin or pt[1] < margin or
+                pt[0] > w_img - margin or pt[1] > h_img - margin
+                for pt in c
+            )
+            if not on_edge and conf >= 0.5:
+                corners = c
+                meta['boundary_method'] = det_method
+                meta['boundary_confidence'] = conf
+        except Exception:
+            pass
+
+        # Fase 3: Perspective correction + Preprocessing
+        warped = warp_to_a4(img, corners) if corners is not None else img
+        gray, preprocess_meta = preprocess_full_pipeline(warped, debug=debug)
+        meta.update(preprocess_meta)
+
+        # Fase 4: SIFT+ECC alignment al template
+        aligner = _get_aligner()
+        aligned, align_info = aligner.align(gray, page)
+        if align_info.get("aligned"):
+            gray = aligned
+        meta['sift_aligned'] = align_info.get("aligned", False)
+
+        ref = aligner._references.get(page) if align_info.get("aligned") else None
+
+        result = (gray, align_info, ref, meta)
+
+        # Salva in cache
+        if cache_key is not None:
+            _preprocess_cache[cache_key] = result
+
+        return result
+
+    @staticmethod
+    def _apply_baseline_fallback(
+        classification_results: dict,
+        cells_dict: dict,
+        ref_img: Optional[np.ndarray],
+        page: str
+    ) -> dict:
+        """
+        Baseline fallback: recupera items che il classificatore primario
+        ha marcato come missing/multiple_marks/ambiguous usando pixel-counting
+        sulla reference.
+        """
+        if ref_img is None:
+            return classification_results
+
+        ref_cells = extract_all_cells(ref_img, page)
+        baseline_results = classify_all_items_baseline(cells_dict, ref_cells)
+
+        for item_id, primary in classification_results.items():
+            fallback = baseline_results.get(item_id, {})
+            pv = primary.get("value")
+            pf = primary.get("flag")
+            fv = fallback.get("value")
+            ff = fallback.get("flag")
+
+            # Se il primario ha fallito, usa baseline come fallback
+            if pv is None or pf in ("missing", "multiple_marks", "ambiguous"):
+                if fv is not None and ff in (None, "low_confidence", "multiple_marks"):
+                    classification_results[item_id] = fallback
+
+        return classification_results
 
     def process_page(
         self,
@@ -137,6 +283,14 @@ class OCREngine:
     ) -> dict:
         """
         Processa una pagina di questionario CBCL.
+
+        Pipeline completa:
+        1. Boundary detection + validazione
+        2. Perspective correction A4
+        3. Preprocessing (white balance, shadow removal, denoise, CLAHE)
+        4. SIFT+ECC alignment al template
+        5. Cell extraction con auto-centering
+        6. Classificazione + baseline fallback
 
         Args:
             image_path_or_array: path immagine o numpy array (grayscale per PDF)
@@ -150,7 +304,7 @@ class OCREngine:
         start = time.time()
         method = self._load_classifier()
 
-        # Step 1: Preprocessing
+        # === PREPROCESSING ===
         if method == "pdf":
             # PDF mode: preprocessing leggero (solo resize)
             if isinstance(image_path_or_array, np.ndarray):
@@ -160,32 +314,18 @@ class OCREngine:
                 gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY) if len(img.shape) == 3 else img
             gray = self._preprocess_pdf_page(gray)
             meta = {"pdf_mode": True, "final_size": gray.shape}
-        elif isinstance(image_path_or_array, np.ndarray):
-            gray = image_path_or_array
-            meta = {}
+            align_info = {}
+            ref_for_extraction = None
         else:
-            gray, meta = preprocess_full_pipeline(image_path_or_array, debug=debug)
+            # Foto mode: pipeline completa (5 fasi)
+            gray, align_info, ref_for_extraction, meta = self._preprocess_photo(
+                image_path_or_array, page, debug=debug
+            )
 
-        # Step 1b: Allineamento SIFT al template (solo foto, non PDF)
-        offsets = None
-        if method != "pdf":
-            gray, aligned_ok, align_info = align_to_template(gray, page)
-            meta['sift_aligned'] = aligned_ok
-            meta['alignment_info'] = align_info
-            if not aligned_ok:
-                meta.setdefault('warnings', []).append(
-                    "Allineamento SIFT al template fallito. Accuratezza potrebbe essere ridotta."
-                )
+        # === CELL EXTRACTION con auto-centering ===
+        cells_dict = extract_all_cells(gray, page, ref_img=ref_for_extraction)
 
-            # Step 1c: Correzione locale con Hough grid lines
-            if aligned_ok:
-                offsets = detect_grid_offsets(gray, page)
-                meta['grid_offsets_success'] = offsets.get('success', False)
-
-        # Step 2: Estrazione celle (con correzioni locali se disponibili)
-        cells_dict = extract_all_cells(gray, page, offsets=offsets)
-
-        # Step 3: Classificazione
+        # === CLASSIFICAZIONE ===
         classification_results = {}
 
         if method == "pdf":
@@ -195,31 +335,35 @@ class OCREngine:
                 min_ratio=Config.PDF_MIN_RATIO,
                 ambiguity_gap=Config.PDF_AMBIGUITY_GAP
             )
-        elif method in ("svm", "yolo") and self._classifier is not None:
-            for item_id, item_cells in cells_dict.items():
-                classification_results[item_id] = self._classifier.predict_item_cells(item_cells)
-        elif method == "ensemble" and self._classifier is not None:
+        elif method in ("svm", "yolo", "ensemble") and self._classifier is not None:
             for item_id, item_cells in cells_dict.items():
                 classification_results[item_id] = self._classifier.predict_item_cells(item_cells)
         else:
             # Fallback OMR
             classification_results = classify_all_items_omr(cells_dict)
 
-        # Step 4: Scoring
+        # === BASELINE FALLBACK (recupero items falliti) ===
+        if method != "pdf":
+            classification_results = self._apply_baseline_fallback(
+                classification_results, cells_dict, ref_for_extraction, page
+            )
+
+        # === SCORING ===
         report = build_score_report(
             classification_results,
             session_id=session_id
         )
 
-        # Metadata aggiuntivi
+        # Metadata
         elapsed_ms = int((time.time() - start) * 1000)
         report["_processing_time_ms"] = elapsed_ms
         report["_method"] = method
         report["_mode_requested"] = self.mode.value
         report["_fallback_reason"] = self._fallback_reason
+        report["_align_info"] = align_info if method != "pdf" else {}
 
         if debug:
-            report["_overlay"] = visualize_grid_overlay(gray, page, offsets=offsets)
+            report["_overlay"] = visualize_grid_overlay(gray, page)
             report["_preprocessed"] = gray
             report["_preprocess_meta"] = meta
 
@@ -235,15 +379,6 @@ class OCREngine:
         """
         Processa un PDF completo (3 pagine = 1 questionario CBCL).
         Forza automaticamente Mode D (PDF).
-
-        Args:
-            pdf_path: path al file PDF
-            pages: lista pagine da processare (default: tutte e 3)
-            session_id: identificatore sessione
-            debug: abilita info debug
-
-        Returns:
-            report combinato con tutti gli item delle 3 pagine
         """
         try:
             import fitz
@@ -269,7 +404,6 @@ class OCREngine:
                 if page_offset >= len(doc):
                     break
 
-                # Render pagina PDF a grayscale
                 pix = doc[page_offset].get_pixmap(dpi=Config.PDF_RENDER_DPI)
                 img = np.frombuffer(
                     pix.samples, dtype=np.uint8
@@ -285,7 +419,6 @@ class OCREngine:
                     debug=debug, session_id=session_id
                 )
 
-                # Accumula risultati classificazione
                 for item_id, item_data in report["items"].items():
                     if item_data.get("value") is not None or item_data.get("flag") != "not_processed":
                         all_classification[item_id] = {
@@ -300,7 +433,6 @@ class OCREngine:
             doc.close()
             self.mode = original_mode
 
-        # Build report combinato
         combined_report = build_score_report(
             all_classification,
             session_id=session_id
@@ -310,5 +442,85 @@ class OCREngine:
         combined_report["_mode_requested"] = "pdf"
         combined_report["_fallback_reason"] = None
         combined_report["_pages_processed"] = len(pages)
+
+        return combined_report
+
+    def process_photos(
+        self,
+        photo_paths: dict,
+        session_id: Optional[str] = None,
+        debug: bool = False
+    ) -> dict:
+        """
+        Processa un set completo di 3 foto (1 questionario CBCL).
+
+        Preprocessing condiviso: ogni foto viene preprocessata una sola volta,
+        poi le celle estratte vengono classificate e recuperate con baseline fallback.
+        Questo garantisce risultati deterministici e consistenti.
+
+        Args:
+            photo_paths: dict {page: path} es. {"page_4": "foto1.jpg", "page_5": "foto2.jpg", "page_6": "foto3.jpg"}
+            session_id: identificatore sessione
+            debug: abilita info debug
+
+        Returns:
+            report combinato con tutti gli item delle 3 pagine
+        """
+        import time as _time
+        start = _time.time()
+        method = self._load_classifier()
+
+        all_classification = {}
+
+        # FASE 1: Preprocessing condiviso — ogni foto preprocessata una sola volta
+        preprocessed = {}
+        for page_name, photo_path in photo_paths.items():
+            gray, align_info, ref, meta = self._preprocess_photo(
+                photo_path, page_name, debug=debug
+            )
+            cells_dict = extract_all_cells(gray, page_name, ref_img=ref)
+            ref_cells = extract_all_cells(ref, page_name) if ref is not None else None
+            preprocessed[page_name] = (cells_dict, ref_cells, ref, gray)
+
+        # FASE 2: Classificazione + baseline fallback per ogni pagina
+        for page_name in photo_paths:
+            cells_dict, ref_cells, ref, gray = preprocessed[page_name]
+
+            # Classificazione primaria
+            if method in ("svm", "yolo", "ensemble") and self._classifier is not None:
+                classification_results = {}
+                for item_id, item_cells in cells_dict.items():
+                    classification_results[item_id] = self._classifier.predict_item_cells(item_cells)
+            else:
+                classification_results = classify_all_items_omr(cells_dict)
+
+            # Baseline fallback
+            if ref_cells is not None:
+                baseline_results = classify_all_items_baseline(cells_dict, ref_cells)
+                for item_id, primary in classification_results.items():
+                    fallback = baseline_results.get(item_id, {})
+                    pv = primary.get("value")
+                    pf = primary.get("flag")
+                    fv = fallback.get("value")
+                    ff = fallback.get("flag")
+                    if pv is None or pf in ("missing", "multiple_marks", "ambiguous"):
+                        if fv is not None and ff in (None, "low_confidence", "multiple_marks"):
+                            classification_results[item_id] = fallback
+
+            # Accumula risultati
+            for item_id, item_data in classification_results.items():
+                all_classification[item_id] = item_data
+
+        # FASE 3: Scoring combinato
+        elapsed_ms = int((_time.time() - start) * 1000)
+        combined_report = build_score_report(
+            all_classification,
+            session_id=session_id
+        )
+        combined_report["_processing_time_ms"] = elapsed_ms
+        combined_report["_method"] = method
+        combined_report["_mode_requested"] = self.mode.value
+        combined_report["_fallback_reason"] = self._fallback_reason
+        combined_report["_pages_processed"] = len(photo_paths)
 
         return combined_report
