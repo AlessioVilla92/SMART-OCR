@@ -158,8 +158,22 @@ class ResultsPage(QWidget):
 
     def _get_export_report(self) -> dict:
         if not self._report:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "Nessun dato",
+                "Nessun risultato disponibile.\nEsegui prima un'analisi nella pagina Upload."
+            )
             return {}
         return {k: v for k, v in self._report.items() if not k.startswith("_")}
+
+    def _safe_write(self, path: str, content: str):
+        """Scrive file con gestione errori."""
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            Path(path).write_text(content, encoding="utf-8")
+            QMessageBox.information(self, "Esportato", f"File salvato:\n{path}")
+        except (IOError, OSError) as e:
+            QMessageBox.warning(self, "Errore esportazione", f"Impossibile salvare:\n{e}")
 
     def _export_csv(self):
         report = self._get_export_report()
@@ -167,7 +181,7 @@ class ResultsPage(QWidget):
             return
         path, _ = QFileDialog.getSaveFileName(self, "Salva CSV", "cbcl_results.csv", "CSV (*.csv)")
         if path:
-            Path(path).write_text(report_to_csv(report), encoding="utf-8")
+            self._safe_write(path, report_to_csv(report))
 
     def _export_json(self):
         report = self._get_export_report()
@@ -175,7 +189,7 @@ class ResultsPage(QWidget):
             return
         path, _ = QFileDialog.getSaveFileName(self, "Salva JSON", "cbcl_results.json", "JSON (*.json)")
         if path:
-            Path(path).write_text(report_to_json(report), encoding="utf-8")
+            self._safe_write(path, report_to_json(report))
 
     def _export_md(self):
         report = self._get_export_report()
@@ -204,9 +218,11 @@ class ResultsPage(QWidget):
         lines.append(f"| Subscale | Score | Mancanti |")
         lines.append(f"|----------|:-----:|:--------:|")
         for name, data in report.get("subscale_scores", {}).items():
-            lines.append(f"| {name.replace('_', ' ')} | {data['score']} | {data['items_missing']} |")
+            score = data.get('score', 0) if isinstance(data, dict) else 0
+            missing = data.get('items_missing', 0) if isinstance(data, dict) else 0
+            lines.append(f"| {name.replace('_', ' ')} | {score} | {missing} |")
 
-        Path(path).write_text("\n".join(lines), encoding="utf-8")
+        self._safe_write(path, "\n".join(lines))
 
     def _export_pdf(self):
         report = self._get_export_report()
@@ -248,7 +264,12 @@ class ResultsPage(QWidget):
             elements.append(Paragraph("Subscale DSM-Oriented", styles['Heading2']))
             sub_data = [["Subscale", "Score", "Mancanti"]]
             for name, data in report.get("subscale_scores", {}).items():
-                sub_data.append([name.replace("_", " "), str(data["score"]), str(data["items_missing"])])
+                if isinstance(data, dict):
+                    sub_data.append([
+                        name.replace("_", " "),
+                        str(data.get("score", 0)),
+                        str(data.get("items_missing", 0))
+                    ])
 
             sub_table = Table(sub_data, colWidths=[120*mm, 25*mm, 25*mm])
             sub_table.setStyle(TableStyle([
@@ -305,6 +326,16 @@ class ResultsPage(QWidget):
 
             doc.build(elements)
 
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Esportato", f"PDF salvato:\n{path}")
+
         except ImportError:
-            # Fallback se reportlab non installato
-            pass
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(
+                self, "Modulo mancante",
+                "Esportazione PDF richiede 'reportlab'.\n\n"
+                "Installa con: pip install reportlab"
+            )
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Errore PDF", f"Errore generazione PDF:\n{e}")

@@ -1,17 +1,17 @@
 {
-  "timestamp": "2026-04-07T16:34:46.460348",
+  "timestamp": "2026-04-11T00:03:46.615511",
   "model": "yolov8n-cls",
   "task": "classification",
   "dataset": "C:\\Users\\Admin\\Documents\\GitHub\\SMART-OCR\\smart_ocr\\data\\yolo_dataset",
-  "training_time_seconds": 2413.0,
+  "training_time_seconds": 81179.3,
   "class_names": {
     "0": "segnato",
     "1": "vuoto"
   },
   "num_classes": 2,
   "results": {
-    "metrics/accuracy_top1": 0.9868040084838867,
+    "metrics/accuracy_top1": 0.9898359179496765,
     "metrics/accuracy_top5": 1.0,
-    "fitness": 0.9934020042419434
+    "fitness": 0.9949179589748383
   }
 }

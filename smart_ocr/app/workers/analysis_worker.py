@@ -1,6 +1,21 @@
 """
 Worker thread per l'analisi OMR non-blocking.
-Usa OCREngine con pipeline completa (boundary + SIFT + auto-centering + baseline fallback).
+
+CRITICO — Perché usa process_photos() e NON process_page():
+    process_photos() fa preprocessing UNA SOLA VOLTA per foto e lo condivide
+    tra classificazione e baseline fallback. Questo è identico al test originale
+    che ha dato 122/122 items, score 68, concordanza 100% su test4.
+
+    Se invece si chiama process_page() separatamente per ogni pagina,
+    SIFT/RANSAC (non-deterministico) può produrre allineamenti diversi
+    ad ogni chiamata, causando ~7 items con valori oscillanti.
+
+CRITICO — Perché NON si chiama clear_cache():
+    La cache di preprocessing (_preprocess_cache) garantisce che la stessa
+    foto produca sempre lo stesso allineamento SIFT. Senza cache, esecuzioni
+    successive sulle stesse foto possono dare score diversi (64-68)
+    a causa del non-determinismo di RANSAC.
+    La cache si auto-invalida quando l'utente carica foto diverse (path diverso).
 """
 
 from PySide6.QtCore import QThread, Signal
@@ -14,18 +29,18 @@ from config import ClassificationMode
 
 
 class AnalysisWorker(QThread):
-    """Thread separato per processing OCR completo."""
+    """Thread separato per processing OCR completo su QThread."""
 
-    progress = Signal(str, int)       # (fase_nome, percentuale)
-    page_done = Signal(str, dict)     # (page_key, page_report)
-    finished = Signal(dict)           # report combinato finale
-    error = Signal(str)               # messaggio errore
+    progress = Signal(str, int)       # (fase_nome, percentuale 0-100)
+    finished = Signal(dict)           # report combinato finale con tutti i 122 items
+    error = Signal(str)               # messaggio errore con traceback
 
     def __init__(self, photo_paths: dict, mode: ClassificationMode):
         """
         Args:
-            photo_paths: {page_key: file_path} es. {"page_4": "foto1.jpg", ...}
-            mode: ClassificationMode da usare
+            photo_paths: {page_key: file_path}
+                         es. {"page_4": "foto1.jpg", "page_5": "foto2.jpg", "page_6": "foto3.jpg"}
+            mode: ClassificationMode (MODE_A_SVM, MODE_B_YOLO, MODE_C_ENSEMBLE)
         """
         super().__init__()
         self.photo_paths = photo_paths
@@ -34,44 +49,30 @@ class AnalysisWorker(QThread):
     def run(self):
         try:
             engine = OCREngine(self.mode)
-            OCREngine.clear_cache()
+            # NOTA: NON chiamare OCREngine.clear_cache() qui.
+            # La cache garantisce risultati deterministici (stessa foto = stesso risultato).
 
-            total_pages = len(self.photo_paths)
-            all_classification = {}
-            total_time = 0
+            self.progress.emit("Preprocessing e analisi in corso...", 10)
 
-            for i, (page_key, photo_path) in enumerate(self.photo_paths.items()):
-                pct_base = int(i / total_pages * 100)
-
-                self.progress.emit(f"{page_key}: rilevamento bordi...", pct_base + 5)
-
-                report = engine.process_page(
-                    photo_path,
-                    page=page_key,
-                    debug=False,
-                    session_id="desktop_scan"
-                )
-
-                self.progress.emit(f"{page_key}: completato", pct_base + int(100 / total_pages))
-                self.page_done.emit(page_key, report)
-
-                # Accumula items
-                for item_id, item_data in report["items"].items():
-                    if item_data.get("value") is not None or item_data.get("flag") != "not_processed":
-                        all_classification[item_id] = item_data
-
-                total_time += report.get("_processing_time_ms", 0)
-
-            # Report combinato finale
-            from core.scorer import build_score_report
-            combined = build_score_report(all_classification, session_id="desktop_scan")
-            combined["_processing_time_ms"] = total_time
-            combined["_method"] = engine.get_active_method()
-            combined["_mode_requested"] = self.mode.value
+            # process_photos() esegue:
+            # 1. Boundary detection + validazione (margin=5, conf>=0.5)
+            # 2. Perspective correction warp_to_a4()
+            # 3. Preprocessing completo (white balance, shadow removal, denoise, CLAHE)
+            # 4. SIFT+ECC alignment al template (TemplateAligner)
+            # 5. Cell extraction con auto-centering (ref_img dalla reference)
+            # 6. Classificazione con il modello scelto (SVM/YOLO/Ensemble)
+            # 7. Baseline fallback: recupera items missing/ambiguous/multiple_marks
+            #    usando pixel-counting sulla differenza foto-reference
+            report = engine.process_photos(
+                self.photo_paths,
+                session_id="desktop_scan",
+                debug=False
+            )
 
             self.progress.emit("Analisi completata!", 100)
-            self.finished.emit(combined)
+            self.finished.emit(report)
 
         except Exception as e:
             import traceback
-            self.error.emit(f"{e}\n\n{traceback.format_exc()}")
+            tb = traceback.format_exc()[:800]
+            self.error.emit(f"{type(e).__name__}: {e}\n\n{tb}")

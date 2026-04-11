@@ -120,17 +120,32 @@ class HomePage(QWidget):
             self, f"Seleziona foto {page_key}",
             "", "Immagini (*.jpg *.jpeg *.png *.bmp)"
         )
-        if path:
-            self._photo_paths[page_key] = path
-            # Aggiorna preview
-            pixmap = QPixmap(path).scaled(
-                200, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation
-            )
-            self._page_previews[page_key].setPixmap(pixmap)
-            self._page_labels[page_key].setText(Path(path).name)
+        if not path:
+            return
 
-            # Abilita pulsante se almeno 1 foto caricata
-            self.analyze_btn.setEnabled(len(self._photo_paths) > 0)
+        # Validazione: file esistente, non vuoto, leggibile come immagine
+        from PySide6.QtWidgets import QMessageBox
+        try:
+            file_path = Path(path)
+            if not file_path.exists() or file_path.stat().st_size == 0:
+                raise ValueError("File vuoto o inesistente")
+            pixmap = QPixmap(path)
+            if pixmap.isNull():
+                raise ValueError("Formato immagine non valido o file corrotto")
+        except Exception as e:
+            QMessageBox.warning(
+                self, "Errore caricamento",
+                f"Impossibile caricare l'immagine:\n{e}"
+            )
+            return
+
+        self._photo_paths[page_key] = path
+        scaled = pixmap.scaled(200, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        self._page_previews[page_key].setPixmap(scaled)
+        self._page_labels[page_key].setText(Path(path).name)
+
+        # Richiede TUTTE e 3 le foto per l'analisi (questionario completo)
+        self.analyze_btn.setEnabled(len(self._photo_paths) == 3)
 
     def _start_analysis(self):
         if not self._photo_paths:

@@ -113,10 +113,26 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self.settings_page)
         content_layout.addWidget(self.stack, 1)
 
-        # Status bar
-        self.status_bar = QLabel("  Pronto")
-        self.status_bar.setObjectName("status_bar")
-        content_layout.addWidget(self.status_bar)
+        # Status bar con "Powered by Tivanio" a destra
+        status_container = QFrame()
+        status_container.setObjectName("status_bar")
+        status_h = QHBoxLayout(status_container)
+        status_h.setContentsMargins(16, 4, 16, 4)
+        status_h.setSpacing(8)
+
+        self.status_bar = QLabel("Pronto")
+        self.status_bar.setStyleSheet("color: #7B8794; font-size: 11px;")
+        status_h.addWidget(self.status_bar)
+        status_h.addStretch()
+
+        powered_status = QLabel("Powered by Tivanio")
+        powered_status.setStyleSheet(
+            "color: #4A5568; font-size: 10px; font-weight: 600; "
+            "letter-spacing: 0.5px;"
+        )
+        status_h.addWidget(powered_status)
+
+        content_layout.addWidget(status_container)
 
         main_layout.addLayout(content_layout, 1)
 
@@ -126,6 +142,10 @@ class MainWindow(QMainWindow):
         self.cbcl_page.values_updated.connect(self._on_form_updated)
 
     def _start_analysis(self, photo_paths: dict):
+        # Previene race condition: se un worker è già in esecuzione, non avvia un secondo
+        if self._worker is not None and self._worker.isRunning():
+            return
+
         mode_str = self.home_page.get_selected_mode()
         mode_map = {
             "svm": ClassificationMode.MODE_A_SVM,
@@ -134,14 +154,29 @@ class MainWindow(QMainWindow):
         }
         mode = mode_map.get(mode_str, ClassificationMode.MODE_C_ENSEMBLE)
 
-        self.status_bar.setText(f"  Analisi in corso ({mode_str.upper()})...")
+        self.status_bar.setText(f"Analisi in corso ({mode_str.upper()})...")
         self.home_page.analyze_btn.setEnabled(False)
+
+        # Cleanup vecchio worker se esiste
+        if self._worker is not None:
+            self._worker.deleteLater()
 
         self._worker = AnalysisWorker(photo_paths, mode)
         self._worker.progress.connect(self._on_progress)
         self._worker.finished.connect(self._on_analysis_done)
         self._worker.error.connect(self._on_analysis_error)
+        # Cleanup automatico alla fine
+        self._worker.finished.connect(self._worker.deleteLater)
         self._worker.start()
+
+    def closeEvent(self, event):
+        """Cleanup worker thread alla chiusura della finestra."""
+        if self._worker is not None and self._worker.isRunning():
+            self._worker.quit()
+            if not self._worker.wait(3000):  # Aspetta max 3 sec
+                self._worker.terminate()
+                self._worker.wait()
+        event.accept()
 
     def _on_progress(self, text: str, pct: int):
         self.home_page.set_progress(text, pct)
@@ -169,8 +204,11 @@ class MainWindow(QMainWindow):
         self.nav_group.button(1).setChecked(True)
 
     def _on_analysis_error(self, msg: str):
-        self.status_bar.setText(f"  ERRORE: {msg[:120]}")
+        self.status_bar.setText("Errore durante l'analisi")
         self.home_page.analyze_btn.setEnabled(True)
+        self.home_page.analysis_complete()
+        from PySide6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Errore Analisi", msg)
 
     def _on_form_updated(self):
         form_items = self.cbcl_page.get_report_items()

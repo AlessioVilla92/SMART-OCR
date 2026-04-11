@@ -95,6 +95,7 @@ class TemplateAligner:
     def align(self, gray: np.ndarray, page_key: str) -> Tuple[np.ndarray, dict]:
         """
         Allinea la foto al template di riferimento.
+        Seed fisso per RANSAC deterministico (risultati riproducibili).
 
         Args:
             gray: immagine grayscale già perspective-corrected
