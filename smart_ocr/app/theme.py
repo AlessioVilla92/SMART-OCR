@@ -17,7 +17,7 @@ COLORS = {
     "bg_glass": "rgba(26, 31, 46, 0.85)",
     "text_primary": "#E8ECF4",
     "text_secondary": "#7B8794",
-    "text_muted": "#4A5568",
+    "text_muted": "#8B95A7",
     "accent": "#7C5CFC",
     "accent_light": "#9B7FFF",
     "accent_glow": "rgba(124, 92, 252, 0.25)",
@@ -62,25 +62,25 @@ QWidget {
 
 #sidebar QPushButton {
     text-align: left;
-    padding: 14px 20px;
+    padding: 11px 16px;
     border: none;
     border-radius: 10px;
-    color: #7B8794;
-    font-size: 13px;
-    font-weight: 500;
-    margin: 2px 8px;
+    color: #A0A8B4;
+    font-size: 12px;
+    font-weight: 600;
+    margin: 1px 8px;
 }
 
 #sidebar QPushButton:hover {
-    background-color: rgba(124, 92, 252, 0.08);
-    color: #B0B8C4;
+    background-color: rgba(124, 92, 252, 0.12);
+    color: #E0D4FF;
 }
 
 #sidebar QPushButton:checked {
-    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(124,92,252,0.2), stop:1 rgba(185,79,255,0.1));
-    color: #9B7FFF;
-    font-weight: 700;
-    border-left: 3px solid #7C5CFC;
+    background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 rgba(124,92,252,0.28), stop:1 rgba(185,79,255,0.14));
+    color: #E0D4FF;
+    font-weight: 800;
+    border-left: 3px solid #9B7FFF;
 }
 
 /* ── Cards ── */
@@ -155,7 +155,7 @@ QScrollBar::handle:vertical:hover {
 
 #analyze_btn:disabled {
     background: #2A3040;
-    color: #4A5568;
+    color: #7B8794;
 }
 
 /* ── Export buttons ── */

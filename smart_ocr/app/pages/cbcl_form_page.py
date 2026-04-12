@@ -108,21 +108,24 @@ class CBCLFormPage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: 800; color: #E8ECF4;")
         title_box.addWidget(title)
         subtitle = QLabel("Verifica e modifica le risposte")
-        subtitle.setStyleSheet("font-size: 11px; color: #7B8794;")
+        subtitle.setStyleSheet("font-size: 11px; color: #A0A8B4; font-weight: 500;")
         title_box.addWidget(subtitle)
         h.addLayout(title_box)
 
         h.addStretch()
 
-        # Stats colorate (5 contatori)
+        # Stats colorate: score + completati% + 4 stati + verificati + da verificare
         self._stat_widgets = {}
         stats_def = [
-            ("score",    "Score",       "#E8ECF4"),
-            ("total",    "Items",       "#E8ECF4"),
-            ("green",    "Verdi",       COLORS["confident"]),
-            ("yellow",   "Gialli",      COLORS["multiple"]),
-            ("blue",     "Azzurri",     COLORS["blank"]),
-            ("red",      "Rossi",       COLORS["error"]),
+            ("score",        "Score",         "#E8ECF4"),
+            ("total",        "Items",         "#E8ECF4"),
+            ("percent",      "Completati",    "#9B7FFF"),
+            ("green",        "Verdi",         COLORS["confident"]),
+            ("yellow",       "Gialli",        COLORS["multiple"]),
+            ("blue",         "Azzurri",       COLORS["blank"]),
+            ("red",          "Rossi",         COLORS["error"]),
+            ("to_review",    "Da verificare", "#FBBF24"),
+            ("verified",     "Verificati",    COLORS["manual"]),
         ]
         for key, label, color in stats_def:
             stat = self._build_stat_pill(label, "0", color)
@@ -148,7 +151,7 @@ class CBCLFormPage(QWidget):
 
         name_lbl = QLabel(label.upper())
         name_lbl.setAlignment(Qt.AlignCenter)
-        name_lbl.setStyleSheet("font-size: 9px; color: #7B8794; font-weight: 700; letter-spacing: 1px;")
+        name_lbl.setStyleSheet("font-size: 9px; color: #A0A8B4; font-weight: 800; letter-spacing: 1px;")
         v.addWidget(name_lbl)
 
         return {"container": container, "value": val_lbl}
@@ -163,19 +166,20 @@ class CBCLFormPage(QWidget):
 
         # Label filtro
         filter_lbl = QLabel("MOSTRA:")
-        filter_lbl.setStyleSheet("font-size: 10px; color: #4A5568; font-weight: 700; letter-spacing: 1px;")
+        filter_lbl.setStyleSheet("font-size: 10px; color: #8B95A7; font-weight: 800; letter-spacing: 1px;")
         h.addWidget(filter_lbl)
 
         # Filtri stato
         self._filter_group = QButtonGroup(self)
         self._filter_group.setExclusive(True)
         filters = [
-            ("all",       "Tutti",        "#9B7FFF"),
+            ("all",       "Tutti",         "#9B7FFF"),
             ("review",    "Da verificare", "#FBBF24"),
-            ("confident", "Verdi",        COLORS["confident"]),
-            ("multiple",  "Gialli",       COLORS["multiple"]),
-            ("blank",     "Azzurri",      COLORS["blank"]),
-            ("error",     "Rossi",        COLORS["error"]),
+            ("verified",  "Verificati",    COLORS["manual"]),
+            ("confident", "Verdi",         COLORS["confident"]),
+            ("multiple",  "Gialli",        COLORS["multiple"]),
+            ("blank",     "Azzurri",       COLORS["blank"]),
+            ("error",     "Rossi",         COLORS["error"]),
         ]
         for i, (key, label, color) in enumerate(filters):
             btn = QPushButton(label)
@@ -184,22 +188,23 @@ class CBCLFormPage(QWidget):
             btn.setStyleSheet(f"""
                 QPushButton {{
                     background: transparent;
-                    color: #7B8794;
-                    border: 1px solid #2A3040;
+                    color: #A0A8B4;
+                    border: 1px solid #343B4D;
                     border-radius: 14px;
                     padding: 6px 14px;
                     font-size: 11px;
-                    font-weight: 600;
+                    font-weight: 700;
                 }}
                 QPushButton:hover {{
                     color: {color};
                     border-color: {color};
+                    background: {color}14;
                 }}
                 QPushButton:checked {{
-                    background: {color}26;
+                    background: {color}30;
                     color: {color};
                     border: 1.5px solid {color};
-                    font-weight: 700;
+                    font-weight: 800;
                 }}
             """)
             if i == 0:
@@ -244,8 +249,11 @@ class CBCLFormPage(QWidget):
             if filter_key == "all":
                 visible = True
             elif filter_key == "review":
-                # Da verificare = giallo + azzurro + rosso
+                # Da verificare = giallo + azzurro + rosso (NON i già verificati manualmente)
                 visible = state in ("multiple", "blank", "error")
+            elif filter_key == "verified":
+                # Verificati = solo quelli modificati manualmente dall'utente
+                visible = (state == "manual")
             else:
                 visible = (state == filter_key)
             widget.setVisible(visible)
@@ -269,26 +277,137 @@ class CBCLFormPage(QWidget):
         self._update_stats()
 
     def _on_item_changed(self, item_id: str, new_value: int):
+        """
+        Chiamato quando l'utente clicca un radio button.
+        Aggiorna stats + riapplica filtro corrente per nascondere
+        automaticamente l'item verificato dalla lista "Da verificare".
+        """
         self._update_stats()
+        # Riapplica filtro: l'item ora è in stato "manual", quindi se il filtro
+        # è "review" sparisce dalla lista, se è "verified" appare.
+        self._apply_filter(self._current_filter)
         self.values_updated.emit()
 
     def _update_stats(self):
-        """Aggiorna i contatori dell'header sticky."""
-        total = len(self._item_widgets)
-        completed = sum(1 for w in self._item_widgets.values() if w.get_value() is not None)
-        score = sum(w.get_value() for w in self._item_widgets.values() if w.get_value() is not None)
+        """Aggiorna TUTTI i contatori dell'header sticky in tempo reale."""
+        widgets = list(self._item_widgets.values())
+        total = len(widgets)
 
-        green = sum(1 for w in self._item_widgets.values() if w.get_state() == "confident")
-        yellow = sum(1 for w in self._item_widgets.values() if w.get_state() == "multiple")
-        blue = sum(1 for w in self._item_widgets.values() if w.get_state() == "blank")
-        red = sum(1 for w in self._item_widgets.values() if w.get_state() == "error")
+        # Conta per stato
+        green = yellow = blue = red = manual = 0
+        for w in widgets:
+            st = w.get_state()
+            if st == "confident":
+                green += 1
+            elif st == "multiple":
+                yellow += 1
+            elif st == "blank":
+                blue += 1
+            elif st == "error":
+                red += 1
+            elif st == "manual":
+                manual += 1
 
+        # Items con valore assegnato (include verdi + gialli + manual)
+        completed = sum(1 for w in widgets if w.get_value() is not None)
+
+        # Score totale (somma di TUTTI i valori: include anche quelli modificati)
+        score = sum(w.get_value() for w in widgets if w.get_value() is not None)
+
+        # Da verificare = giallo + azzurro + rosso (non-verificati)
+        to_review = yellow + blue + red
+
+        # Percentuale completamento
+        percent = int((completed / total) * 100) if total > 0 else 0
+
+        # Aggiorna tutti i widget
         self._stat_widgets["score"]["value"].setText(str(score))
         self._stat_widgets["total"]["value"].setText(f"{completed}/{total}")
+        self._stat_widgets["percent"]["value"].setText(f"{percent}%")
         self._stat_widgets["green"]["value"].setText(str(green))
         self._stat_widgets["yellow"]["value"].setText(str(yellow))
         self._stat_widgets["blue"]["value"].setText(str(blue))
         self._stat_widgets["red"]["value"].setText(str(red))
+        self._stat_widgets["to_review"]["value"].setText(str(to_review))
+        self._stat_widgets["verified"]["value"].setText(str(manual))
+
+    def get_form_values_for_save(self) -> dict:
+        """
+        Ritorna tutti i valori del form per salvataggio progetto.
+        Include: valore, confidence, flag, stato UI.
+        """
+        result = {}
+        for item_id, widget in self._item_widgets.items():
+            result[item_id] = {
+                "value": widget.get_value(),
+                "confidence": widget._confidence,
+                "state": widget.get_state(),
+            }
+        return result
+
+    def load_form_values(self, form_values: dict):
+        """
+        Carica i valori del form da un progetto salvato.
+        Ripristina valore, confidence e stato UI (incluso 'manual').
+        """
+        from app.widgets.cbcl_item_widget import COLORS
+        for item_id, widget in self._item_widgets.items():
+            data = form_values.get(item_id, {})
+            value = data.get("value")
+            confidence = data.get("confidence", 0.0)
+            state = data.get("state", "pending")
+
+            widget._value = value
+            widget._confidence = confidence
+            widget._state = state
+
+            # Ripristina radio button
+            widget.button_group.blockSignals(True)
+            for btn in widget.buttons.values():
+                btn.setChecked(False)
+            if value is not None and value in widget.buttons:
+                widget.buttons[value].setChecked(True)
+            for btn in widget.buttons.values():
+                btn.setEnabled(True)
+            widget.button_group.blockSignals(False)
+
+            # Ripristina stile in base allo stato
+            if state == "confident":
+                widget._apply_state(COLORS["confident"], f"OK {confidence:.0%}")
+            elif state == "multiple":
+                widget._apply_state(COLORS["multiple"], "PIU' SEGNI")
+            elif state == "blank":
+                widget._apply_state(COLORS["blank"], "NON COMPILATA")
+            elif state == "error":
+                widget._apply_state(COLORS["error"], "ERRORE")
+            elif state == "manual":
+                widget._apply_state(COLORS["manual"], "MODIFICATA")
+            else:
+                widget._apply_state(COLORS["neutral"], "")
+
+        self._update_stats()
+        self._apply_filter(self._current_filter)
+
+    def reset(self):
+        """Azzera tutti gli item widgets allo stato iniziale (pending/neutral)."""
+        from app.widgets.cbcl_item_widget import COLORS
+        for widget in self._item_widgets.values():
+            widget._value = None
+            widget._confidence = 0.0
+            widget._state = "pending"
+            widget.button_group.blockSignals(True)
+            for btn in widget.buttons.values():
+                btn.setChecked(False)
+                btn.setEnabled(True)
+            widget.button_group.blockSignals(False)
+            widget._apply_state(COLORS["neutral"], "")
+
+        # Reset filtro a "Tutti"
+        self._current_filter = "all"
+        for btn in self._filter_group.buttons():
+            btn.setChecked(self._filter_group.id(btn) == 0)
+        self._apply_filter("all")
+        self._update_stats()
 
     def get_all_values(self) -> dict:
         """Ritorna tutti i valori correnti {item_id: value}."""

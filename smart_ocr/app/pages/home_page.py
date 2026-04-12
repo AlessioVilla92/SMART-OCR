@@ -13,6 +13,7 @@ class HomePage(QWidget):
     """Pagina caricamento foto e analisi."""
 
     analysis_requested = Signal(dict)  # {page: path}
+    reset_requested = Signal()         # emesso quando l'utente vuole azzerare il progetto
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -104,6 +105,32 @@ class HomePage(QWidget):
 
         bottom.addStretch()
 
+        # Pulsante RESET (azzera tutto)
+        self.reset_btn = QPushButton("RESET")
+        self.reset_btn.setFixedSize(120, 50)
+        self.reset_btn.setStyleSheet("""
+            QPushButton {
+                background: transparent;
+                color: #F87171;
+                border: 1.5px solid #F87171;
+                border-radius: 10px;
+                padding: 10px 18px;
+                font-size: 13px;
+                font-weight: 800;
+                letter-spacing: 1px;
+            }
+            QPushButton:hover {
+                background: rgba(248,113,113,0.10);
+                color: #FCA5A5;
+                border-color: #FCA5A5;
+            }
+            QPushButton:pressed {
+                background: rgba(248,113,113,0.20);
+            }
+        """)
+        self.reset_btn.clicked.connect(self._reset_project)
+        bottom.addWidget(self.reset_btn)
+
         # Pulsante analizza
         self.analyze_btn = QPushButton("ANALIZZA")
         self.analyze_btn.setObjectName("analyze_btn")
@@ -151,6 +178,74 @@ class HomePage(QWidget):
         if not self._photo_paths:
             return
         self.analysis_requested.emit(dict(self._photo_paths))
+
+    def set_photos_from_paths(self, photo_paths: dict):
+        """
+        Carica foto da paths (es. da un progetto .cbcl caricato).
+        Aggiorna preview e stato interno senza passare dal file dialog.
+        """
+        self._photo_paths.clear()
+        for page_key, path in photo_paths.items():
+            file_path = Path(path)
+            if not file_path.exists():
+                continue
+            pixmap = QPixmap(path)
+            if pixmap.isNull():
+                continue
+
+            self._photo_paths[page_key] = path
+            scaled = pixmap.scaled(200, 280, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            if page_key in self._page_previews:
+                self._page_previews[page_key].setPixmap(scaled)
+                self._page_labels[page_key].setText(file_path.name)
+
+        self.analyze_btn.setEnabled(len(self._photo_paths) == 3)
+
+    def get_photo_paths(self) -> dict:
+        """Ritorna le foto correnti {page_key: path}."""
+        return dict(self._photo_paths)
+
+    def _reset_project(self):
+        """Azzera foto, preview e stato per ricominciare un nuovo progetto."""
+        from PySide6.QtWidgets import QMessageBox
+        # Se ci sono foto caricate, chiedi conferma
+        if self._photo_paths:
+            reply = QMessageBox.question(
+                self, "Nuovo progetto",
+                "Vuoi cancellare tutte le foto e ricominciare un nuovo progetto?\n\n"
+                "I risultati correnti verranno persi.",
+                QMessageBox.Yes | QMessageBox.No,
+                QMessageBox.No
+            )
+            if reply != QMessageBox.Yes:
+                return
+
+        # Pulisci stato interno
+        self._photo_paths.clear()
+
+        # Pulisci preview
+        for page_key, preview in self._page_previews.items():
+            preview.clear()
+            preview.setText("Nessuna foto")
+            preview.setStyleSheet(
+                "background: #1E293B; border: 2px dashed #334155; "
+                "border-radius: 8px; color: #64748B; font-size: 11px;"
+            )
+
+        # Pulisci label status
+        for lbl in self._page_labels.values():
+            lbl.setText("")
+
+        # Disabilita pulsante analizza
+        self.analyze_btn.setEnabled(False)
+
+        # Nascondi progress bar
+        self.progress_bar.setVisible(False)
+        self.progress_bar.setValue(0)
+        self.progress_label.setText("")
+
+        # Notifica la main window per resettare anche questionario e risultati
+        self.reset_requested.emit()
 
     def get_selected_mode(self) -> str:
         idx = self.mode_combo.currentIndex()

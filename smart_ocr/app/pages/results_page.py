@@ -156,6 +156,14 @@ class ResultsPage(QWidget):
         self.update_results(report)
         self._report = report
 
+    def reset(self):
+        """Azzera i risultati al loro stato iniziale."""
+        self._report = None
+        self.score_label.setText("--")
+        for lbl in self._stat_labels.values():
+            lbl.setText("--")
+        self.subscale_table.setRowCount(0)
+
     def _get_export_report(self) -> dict:
         if not self._report:
             from PySide6.QtWidgets import QMessageBox

@@ -145,7 +145,7 @@ def _model_panel(model_name: str, accent: str, defaults: dict) -> tuple:
 
     # === SOGLIE CLASSIFICAZIONE ===
     cls_lbl = QLabel("CLASSIFICAZIONE CELLA")
-    cls_lbl.setStyleSheet("color: #4A5568; font-size: 9px; font-weight: 700; letter-spacing: 1px;")
+    cls_lbl.setStyleSheet("color: #8B95A7; font-size: 9px; font-weight: 800; letter-spacing: 1px;")
     layout.addWidget(cls_lbl)
 
     sliders['confidence_min'] = ThresholdSlider(
@@ -170,7 +170,7 @@ def _model_panel(model_name: str, accent: str, defaults: dict) -> tuple:
 
     # === STATI WIDGET (colori) ===
     states_lbl = QLabel("STATI DOMANDA (COLORI)")
-    states_lbl.setStyleSheet("color: #4A5568; font-size: 9px; font-weight: 700; letter-spacing: 1px;")
+    states_lbl.setStyleSheet("color: #8B95A7; font-size: 9px; font-weight: 800; letter-spacing: 1px;")
     layout.addWidget(states_lbl)
 
     sliders['green_threshold'] = ThresholdSlider(
