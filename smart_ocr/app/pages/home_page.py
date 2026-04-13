@@ -1,12 +1,61 @@
-"""Pagina Home — Upload foto e avvio analisi."""
+"""Pagina Home — Upload foto (con drag & drop) e avvio analisi."""
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
-    QFileDialog, QComboBox, QProgressBar, QGroupBox, QGridLayout
+    QFileDialog, QComboBox, QProgressBar, QGroupBox, QGridLayout,
+    QSpinBox
 )
 from PySide6.QtCore import Signal, Qt
-from PySide6.QtGui import QPixmap
+from PySide6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 from pathlib import Path
+
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+
+_DROP_IDLE_STYLE = (
+    "background: #1E293B; border: 2px dashed #334155; "
+    "border-radius: 8px; color: #64748B; font-size: 11px;"
+)
+_DROP_HOVER_STYLE = (
+    "background: rgba(124,92,252,0.12); border: 2px dashed #7C5CFC; "
+    "border-radius: 8px; color: #C8B5FF; font-size: 11px;"
+)
+
+
+class _DropZone(QLabel):
+    """Area di preview che accetta drag & drop di un'immagine."""
+
+    file_dropped = Signal(str)   # emette il path del file droppato
+
+    def __init__(self, parent=None):
+        super().__init__("Trascina foto qui\no clicca Carica", parent)
+        self.setFixedSize(200, 280)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet(_DROP_IDLE_STYLE)
+        self.setAcceptDrops(True)
+
+    # ── drag enter ──
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls and Path(urls[0].toLocalFile()).suffix.lower() in _IMAGE_EXTENSIONS:
+                event.acceptProposedAction()
+                self.setStyleSheet(_DROP_HOVER_STYLE)
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet(_DROP_IDLE_STYLE)
+
+    # ── drop ──
+    def dropEvent(self, event: QDropEvent):
+        self.setStyleSheet(_DROP_IDLE_STYLE)
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        path = urls[0].toLocalFile()
+        if Path(path).suffix.lower() in _IMAGE_EXTENSIONS:
+            event.acceptProposedAction()
+            self.file_dropped.emit(path)
 
 
 class HomePage(QWidget):
@@ -18,7 +67,33 @@ class HomePage(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._photo_paths = {}
+        self.setAcceptDrops(True)
         self._setup_ui()
+
+    # ── drag & drop sulla pagina intera ──
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            for url in event.mimeData().urls():
+                if Path(url.toLocalFile()).suffix.lower() in _IMAGE_EXTENSIONS:
+                    event.acceptProposedAction()
+                    return
+        event.ignore()
+
+    def dropEvent(self, event: QDropEvent):
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        # Pagine libere in ordine
+        page_order = ["page_4", "page_5", "page_6"]
+        free = [p for p in page_order if p not in self._photo_paths]
+        for url in urls:
+            path = url.toLocalFile()
+            if Path(path).suffix.lower() not in _IMAGE_EXTENSIONS:
+                continue
+            if not free:
+                break
+            self._apply_photo(free.pop(0), path)
+        event.acceptProposedAction()
 
     def _setup_ui(self):
         layout = QVBoxLayout(self)
@@ -50,14 +125,9 @@ class HomePage(QWidget):
             lbl.setStyleSheet("font-size: 11px; color: #94A3B8;")
             upload_grid.addWidget(lbl, 0, col)
 
-            # Preview
-            preview = QLabel("Nessuna foto")
-            preview.setFixedSize(200, 280)
-            preview.setAlignment(Qt.AlignCenter)
-            preview.setStyleSheet(
-                "background: #1E293B; border: 2px dashed #334155; "
-                "border-radius: 8px; color: #64748B; font-size: 11px;"
-            )
+            # Preview (drag & drop abilitato)
+            preview = _DropZone()
+            preview.file_dropped.connect(lambda path, pk=page_key: self._apply_photo(pk, path))
             self._page_previews[page_key] = preview
             upload_grid.addWidget(preview, 1, col)
 
@@ -90,6 +160,32 @@ class HomePage(QWidget):
         self.mode_combo.setCurrentIndex(2)
         model_layout.addWidget(self.mode_combo)
         bottom.addWidget(model_group)
+
+        # Compilatore (Madre / Padre)
+        comp_group = QGroupBox("Compilatore")
+        comp_layout = QVBoxLayout(comp_group)
+        self.combo_compilatore = QComboBox()
+        self.combo_compilatore.addItems(["Madre (MD)", "Padre (PD)"])
+        comp_layout.addWidget(self.combo_compilatore)
+        bottom.addWidget(comp_group)
+
+        # Sesso
+        sex_group = QGroupBox("Sesso")
+        sex_layout = QVBoxLayout(sex_group)
+        self.combo_sex = QComboBox()
+        self.combo_sex.addItems(["M", "F"])
+        sex_layout.addWidget(self.combo_sex)
+        bottom.addWidget(sex_group)
+
+        # Età
+        age_group = QGroupBox("Età")
+        age_layout = QVBoxLayout(age_group)
+        self.spin_age = QSpinBox()
+        self.spin_age.setRange(6, 18)
+        self.spin_age.setValue(10)
+        self.spin_age.setSuffix(" anni")
+        age_layout.addWidget(self.spin_age)
+        bottom.addWidget(age_group)
 
         bottom.addStretch()
 
@@ -145,12 +241,13 @@ class HomePage(QWidget):
     def _load_photo(self, page_key: str):
         path, _ = QFileDialog.getOpenFileName(
             self, f"Seleziona foto {page_key}",
-            "", "Immagini (*.jpg *.jpeg *.png *.bmp)"
+            "", "Immagini (*.jpg *.jpeg *.png *.bmp *.tiff *.webp)"
         )
-        if not path:
-            return
+        if path:
+            self._apply_photo(page_key, path)
 
-        # Validazione: file esistente, non vuoto, leggibile come immagine
+    def _apply_photo(self, page_key: str, path: str):
+        """Valida e applica una foto (da file dialog o drag & drop)."""
         from PySide6.QtWidgets import QMessageBox
         try:
             file_path = Path(path)
@@ -226,11 +323,8 @@ class HomePage(QWidget):
         # Pulisci preview
         for page_key, preview in self._page_previews.items():
             preview.clear()
-            preview.setText("Nessuna foto")
-            preview.setStyleSheet(
-                "background: #1E293B; border: 2px dashed #334155; "
-                "border-radius: 8px; color: #64748B; font-size: 11px;"
-            )
+            preview.setText("Trascina foto qui\no clicca Carica")
+            preview.setStyleSheet(_DROP_IDLE_STYLE)
 
         # Pulisci label status
         for lbl in self._page_labels.values():
@@ -250,6 +344,26 @@ class HomePage(QWidget):
     def get_selected_mode(self) -> str:
         idx = self.mode_combo.currentIndex()
         return ["svm", "yolo", "ensemble"][idx]
+
+    def get_compilatore_index(self) -> int:
+        """0 = Madre, 1 = Padre."""
+        return self.combo_compilatore.currentIndex()
+
+    def get_child_sex(self) -> str:
+        return self.combo_sex.currentText()
+
+    def get_child_age(self) -> int:
+        return self.spin_age.value()
+
+    def set_compilatore_index(self, idx: int):
+        self.combo_compilatore.setCurrentIndex(idx)
+
+    def set_child_sex(self, sex: str):
+        self.combo_sex.setCurrentIndex(0 if sex == "M" else 1)
+
+    def set_child_age(self, age: int):
+        if 6 <= age <= 18:
+            self.spin_age.setValue(age)
 
     def set_progress(self, text: str, value: int):
         self.progress_bar.setVisible(True)

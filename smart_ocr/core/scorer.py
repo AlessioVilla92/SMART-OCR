@@ -1,17 +1,11 @@
 """
 core/scorer.py
 
-Mappa i risultati della classificazione agli item CBCL.
-Calcola score totali e per subscale.
-Genera output JSON e CSV.
+Adapter che mantiene l'API build_score_report() per compatibilita'
+con engine.py e results_page.py, delegando il calcolo al nuovo
+CBCLScorer con formule verificate.
 
-Il CBCL 6-18 ha le seguenti subscale (DSM-oriented):
-- Affective Problems: items 14, 24, 56c, 56d, 56e, 56f, 56g
-- Anxiety Problems: items 22, 29, 30, 31, 32, 33, 34, 35, 50, 52, 112
-- Somatic Problems: items 51, 54, 56a, 56b, 56h
-- ADHD Problems: items 1, 4, 8, 10, 13, 17, 41, 61, 78
-- Oppositional Defiant: items 3, 22, 23, 68, 86, 95, 97
-- Conduct Problems: items 2, 26, 28, 39, 43, 63, 67, 72, 73, 81, 82, 90, 96, 99, 101
+Il vecchio modulo e' salvato in core/scorer_old.py.
 """
 
 import json
@@ -20,48 +14,76 @@ import io
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 
-
-# Subscale CBCL 6-18 DSM-oriented
-CBCL_SUBSCALES = {
-    "Affective_Problems": [14, 24, "56c", "56d", "56e", "56f", "56g"],
-    "Anxiety_Problems": [22, 29, 30, 31, 32, 33, 34, 35, 50, 52, 112],
-    "Somatic_Problems": [51, 54, "56a", "56b", "56h"],
-    "ADHD_Problems": [1, 4, 8, 10, 13, 17, 41, 61, 78],
-    "Oppositional_Defiant": [3, 22, 23, 68, 86, 95, 97],
-    "Conduct_Problems": [2, 26, 28, 39, 43, 63, 67, 72, 73, 81, 82, 90, 96, 99, 101],
-    "Internalizing": list(range(1, 36)) + ["56a", "56b", "56c", "56d", "56e", "56f", "56g", "56h"],
-    "Externalizing": list(range(86, 113)),
-}
-
-# Tutti gli item CBCL nell'ordine corretto
-ALL_ITEMS = (
-    [str(i) for i in range(1, 56)] +
-    ["56a", "56b", "56c", "56d", "56e", "56f", "56g", "56h"] +
-    [str(i) for i in range(57, 113)] +
-    ["113a", "113b", "113c"]
+from scorer.cbcl_scorer import (
+    CBCLScorer, CBCLProfile, Compilatore, ScaleResult,
+    ALL_ITEMS as SCORED_ITEMS,
+    SYNDROME_SCALES, DSM_SCALES, BROADBAND_COMPONENTS, OTHER_PROBLEMS,
 )
+
+
+# Lista 122 item come stringhe per compatibilita' display e form
+ALL_ITEMS = [str(i) for i in SCORED_ITEMS]
+
+# Subscale legacy (ora calcolate dal CBCLScorer)
+CBCL_SUBSCALES = {}
+for key, scale in SYNDROME_SCALES.items():
+    CBCL_SUBSCALES[key] = scale["items"]
+CBCL_SUBSCALES["other_problems"] = OTHER_PROBLEMS["items"]
+for key, scale in DSM_SCALES.items():
+    CBCL_SUBSCALES[key] = scale["items"]
+for key, scale in BROADBAND_COMPONENTS.items():
+    # Broadband: flatten component items
+    items = []
+    for comp_key in scale["components"]:
+        items.extend(SYNDROME_SCALES[comp_key]["items"])
+    CBCL_SUBSCALES[key] = items
+
+
+def _extract_responses(classification_results: dict) -> dict:
+    """Estrae risposte flat {item_key: 0|1|2} da classification_results."""
+    responses = {}
+    for item_key, result in classification_results.items():
+        if isinstance(result, dict):
+            val = result.get("value")
+        else:
+            val = result
+        if val is not None:
+            # Normalizza chiave: int per numeri, str per sub-item
+            try:
+                k = int(item_key)
+            except (ValueError, TypeError):
+                k = str(item_key)
+            responses[k] = int(val)
+    return responses
 
 
 def build_score_report(
     classification_results: Dict[str, dict],
     session_id: Optional[str] = None,
-    metadata: Optional[dict] = None
+    metadata: Optional[dict] = None,
+    compilatore: Compilatore = Compilatore.MADRE,
+    sex: Optional[str] = None,
+    age: Optional[int] = None,
 ) -> dict:
     """
     Costruisce il report completo da risultati classificazione.
+    Usa internamente CBCLScorer per calcoli verificati.
 
     Args:
-        classification_results: output di CBCLClassifier.predict_item_cells()
-                                 per ogni item
+        classification_results: output classificazione per ogni item
         session_id: identificatore sessione (NON nome paziente)
-        metadata: metadati aggiuntivi (data, operatore, ecc.)
+        metadata: metadati aggiuntivi
+        compilatore: Compilatore.MADRE o .PADRE
+        sex: "M" o "F"
+        age: eta' del bambino
 
-    Returns: report completo come dict Python
+    Returns: report completo come dict Python (con _profile allegato)
     """
     report = {
         "session_id": session_id or f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         "timestamp": datetime.now().isoformat(),
         "metadata": metadata or {},
+        "compilatore": compilatore.value,
         "items": {},
         "subscale_scores": {},
         "total_score": 0,
@@ -69,10 +91,8 @@ def build_score_report(
         "statistics": {}
     }
 
-    total = 0
+    # Popola items dal classification_results
     flagged_items = []
-
-    # Processa ogni item
     for item_id in ALL_ITEMS:
         if item_id not in classification_results:
             report["items"][item_id] = {
@@ -83,44 +103,85 @@ def build_score_report(
             continue
 
         result = classification_results[item_id]
-        value = result.get("value")
-        flag = result.get("flag")
-        confidence = result.get("confidence", 0.0)
+        value = result.get("value") if isinstance(result, dict) else result
+        flag = result.get("flag") if isinstance(result, dict) else None
+        confidence = result.get("confidence", 0.0) if isinstance(result, dict) else 0.0
 
         report["items"][item_id] = {
             "value": value,
             "flag": flag,
-            "confidence": round(confidence, 3)
+            "confidence": round(confidence, 3) if confidence else 0.0
         }
-
-        if value is not None:
-            total += value
 
         if flag and flag not in ("missing",):
             flagged_items.append({"item": item_id, "flag": flag})
 
-    report["total_score"] = total
     report["flags"] = flagged_items
 
-    # Calcola subscale
-    for subscale_name, items in CBCL_SUBSCALES.items():
-        subscale_total = 0
-        subscale_missing = 0
+    # Calcola scoring con CBCLScorer
+    responses = _extract_responses(classification_results)
+    scorer = CBCLScorer(
+        responses=responses,
+        compilatore=compilatore,
+        sex=sex,
+        age=age,
+    )
+    profile = scorer.compute()
 
-        for item in items:
-            item_str = str(item)
-            item_data = report["items"].get(item_str, {})
-            val = item_data.get("value")
+    # Total score dal profile
+    report["total_score"] = profile.total.raw_score
 
-            if val is not None:
-                subscale_total += val
-            else:
-                subscale_missing += 1
+    # Subscale scores — include tutte le scale
+    subscale_scores = {}
 
-        report["subscale_scores"][subscale_name] = {
-            "score": subscale_total,
-            "items_missing": subscale_missing
+    # Scale sindromiche
+    for key, sr in profile.syndrome.items():
+        subscale_scores[key] = {
+            "score": sr.raw_score,
+            "max_score": sr.max_score,
+            "n_items": sr.n_items,
+            "items_missing": len(sr.missing_items),
+            "pct": sr.pct,
+            "label_it": sr.label_it,
+            "type": "syndrome",
         }
+
+    # Other problems
+    subscale_scores["other_problems"] = {
+        "score": profile.other.raw_score,
+        "max_score": profile.other.max_score,
+        "n_items": profile.other.n_items,
+        "items_missing": len(profile.other.missing_items),
+        "pct": profile.other.pct,
+        "label_it": profile.other.label_it,
+        "type": "syndrome",
+    }
+
+    # Scale broadband
+    for key, sr in profile.broadband.items():
+        subscale_scores[key] = {
+            "score": sr.raw_score,
+            "max_score": sr.max_score,
+            "n_items": sr.n_items,
+            "items_missing": len(sr.missing_items),
+            "pct": sr.pct,
+            "label_it": sr.label_it,
+            "type": "broadband",
+        }
+
+    # Scale DSM
+    for key, sr in profile.dsm.items():
+        subscale_scores[key] = {
+            "score": sr.raw_score,
+            "max_score": sr.max_score,
+            "n_items": sr.n_items,
+            "items_missing": len(sr.missing_items),
+            "pct": sr.pct,
+            "label_it": sr.label_it,
+            "type": "dsm",
+        }
+
+    report["subscale_scores"] = subscale_scores
 
     # Statistiche generali
     all_values = [
@@ -136,11 +197,31 @@ def build_score_report(
         "items_flagged": len(flagged_items),
         "items_ambiguous": sum(1 for f in flagged_items if f["flag"] == "ambiguous"),
         "mean_confidence": round(
-            sum(report["items"][i].get("confidence", 0) for i in ALL_ITEMS) / len(ALL_ITEMS), 3
+            sum(report["items"][i].get("confidence", 0) for i in ALL_ITEMS) / max(len(ALL_ITEMS), 1), 3
         )
     }
 
+    # Profilo completo allegato (non serializzabile in JSON direttamente)
+    report["_profile"] = profile
+
     return report
+
+
+def build_full_profile(
+    classification_results: dict,
+    compilatore: Compilatore = Compilatore.MADRE,
+    sex: Optional[str] = None,
+    age: Optional[int] = None,
+) -> CBCLProfile:
+    """Calcola direttamente un CBCLProfile dai risultati classificazione."""
+    responses = _extract_responses(classification_results)
+    scorer = CBCLScorer(
+        responses=responses,
+        compilatore=compilatore,
+        sex=sex,
+        age=age,
+    )
+    return scorer.compute()
 
 
 def report_to_csv(report: dict) -> str:
@@ -152,14 +233,15 @@ def report_to_csv(report: dict) -> str:
     output = io.StringIO()
 
     # Header: session_id + tutti gli item nell'ordine standard
-    header = ["session_id", "timestamp"] + ALL_ITEMS + ["total_score"]
-    writer = csv.writer(output)
+    header = ["session_id", "timestamp", "compilatore"] + ALL_ITEMS + ["total_score"]
+    writer = csv.writer(output, delimiter=";")
     writer.writerow(header)
 
     # Valori
     row = [
         report["session_id"],
-        report["timestamp"]
+        report["timestamp"],
+        report.get("compilatore", "MD"),
     ]
     for item_id in ALL_ITEMS:
         val = report["items"].get(item_id, {}).get("value", "")
@@ -172,5 +254,6 @@ def report_to_csv(report: dict) -> str:
 
 
 def report_to_json(report: dict) -> str:
-    """Converte il report in JSON formattato."""
-    return json.dumps(report, indent=2, ensure_ascii=False)
+    """Converte il report in JSON formattato (esclude _profile non serializzabile)."""
+    clean = {k: v for k, v in report.items() if not k.startswith("_")}
+    return json.dumps(clean, indent=2, ensure_ascii=False)

@@ -21,7 +21,7 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-PROJECT_VERSION = "1.0"
+PROJECT_VERSION = "1.1"
 PROJECT_EXTENSION = ".cbcl"
 PROJECT_MAGIC = "SMARTOCR_CBCL"  # marker per validazione
 
@@ -33,6 +33,9 @@ def save_project(
     form_values: dict,
     mode: str = "",
     session_id: str = "",
+    compilatore: str = "MD",
+    child_sex: str = "",
+    child_age: int = 0,
 ) -> bool:
     """
     Salva un progetto completo in un file .cbcl (ZIP).
@@ -61,6 +64,9 @@ def save_project(
         "mode": mode,
         "session_id": session_id or f"project_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
         "pages": list(photo_paths.keys()),
+        "compilatore": compilatore,
+        "child_sex": child_sex,
+        "child_age": child_age,
     }
 
     try:
@@ -74,6 +80,12 @@ def save_project(
 
             # 3. Valori form correnti (con le modifiche utente)
             zf.writestr("form_values.json", json.dumps(form_values, indent=2, ensure_ascii=False))
+
+            # 3b. Profilo CBCL completo (se disponibile nel report)
+            profile = report.get("_profile") if report else None
+            if profile and hasattr(profile, "to_dict"):
+                zf.writestr("profile.json", json.dumps(
+                    profile.to_dict(), indent=2, ensure_ascii=False))
 
             # 4. Foto originali
             for page_key, photo_path in photo_paths.items():
@@ -147,6 +159,12 @@ def load_project(project_path: str, extract_photos_to: Optional[str] = None) -> 
             except KeyError:
                 form_values = {}
 
+            # Carica profilo CBCL (v1.1+)
+            try:
+                profile_data = json.loads(zf.read("profile.json").decode("utf-8"))
+            except KeyError:
+                profile_data = {}
+
             # Estrai foto
             photo_paths = {}
             for name in zf.namelist():
@@ -162,6 +180,7 @@ def load_project(project_path: str, extract_photos_to: Optional[str] = None) -> 
             "report": report,
             "form_values": form_values,
             "photo_paths": photo_paths,
+            "profile_data": profile_data,
         }
 
     except zipfile.BadZipFile:

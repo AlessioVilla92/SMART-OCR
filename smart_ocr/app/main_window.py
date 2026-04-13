@@ -49,6 +49,7 @@ from app.pages.results_page import ResultsPage
 from app.pages.settings_page import SettingsPage
 from app.workers.analysis_worker import AnalysisWorker
 from core.project_file import save_project, load_project, PROJECT_EXTENSION
+from scorer.cbcl_scorer import Compilatore
 
 
 class MainWindow(QMainWindow):
@@ -295,7 +296,28 @@ class MainWindow(QMainWindow):
         self.home_page.set_progress(text, pct)
         self.status_bar.setText(f"  {text}")
 
+    def _get_compilatore(self) -> Compilatore:
+        """Restituisce il compilatore selezionato nella pagina Upload."""
+        return Compilatore.MADRE if self.home_page.get_compilatore_index() == 0 else Compilatore.PADRE
+
+    def _get_child_sex(self) -> str:
+        return self.home_page.get_child_sex()
+
+    def _get_child_age(self) -> int:
+        return self.home_page.get_child_age()
+
     def _on_analysis_done(self, report: dict):
+        # Ricalcola con il compilatore/anagrafica selezionati
+        from core.scorer import build_full_profile
+        profile = build_full_profile(
+            report.get("items", {}),
+            compilatore=self._get_compilatore(),
+            sex=self._get_child_sex(),
+            age=self._get_child_age(),
+        )
+        report["_profile"] = profile
+        report["compilatore"] = self._get_compilatore().value
+
         self._current_report = report
         self.cbcl_page.apply_results(report)
         self.results_page.update_results(report)
@@ -325,7 +347,12 @@ class MainWindow(QMainWindow):
 
     def _on_form_updated(self):
         form_items = self.cbcl_page.get_report_items()
-        self.results_page.update_from_form(form_items)
+        self.results_page.update_from_form(
+            form_items,
+            compilatore=self._get_compilatore(),
+            sex=self._get_child_sex(),
+            age=self._get_child_age(),
+        )
 
     # ────────────────────────────────────────────────────────────────────
     # SHORTCUTS PROGETTO (Ctrl+N / Ctrl+O / Ctrl+S / Ctrl+Shift+S)
@@ -352,6 +379,16 @@ class MainWindow(QMainWindow):
         except (FileNotFoundError, ValueError) as e:
             QMessageBox.warning(self, "Errore apertura", f"Impossibile aprire il progetto:\n{e}")
             return
+
+        # Ripristina compilatore/anagrafica dai metadata
+        meta = project.get("metadata", {})
+        comp_val = meta.get("compilatore", "MD")
+        self.home_page.set_compilatore_index(0 if comp_val == "MD" else 1)
+        child_sex = meta.get("child_sex", "M")
+        self.home_page.set_child_sex(child_sex)
+        child_age = meta.get("child_age", 10)
+        if isinstance(child_age, int) and 6 <= child_age <= 18:
+            self.home_page.set_child_age(child_age)
 
         # Reset corrente (senza conferma, l'utente ha già scelto)
         self.cbcl_page.reset()
@@ -425,6 +462,9 @@ class MainWindow(QMainWindow):
             report=self._current_report or {},
             form_values=form_values,
             mode=mode,
+            compilatore=self._get_compilatore().value,
+            child_sex=self._get_child_sex(),
+            child_age=self._get_child_age(),
         )
 
         if success:

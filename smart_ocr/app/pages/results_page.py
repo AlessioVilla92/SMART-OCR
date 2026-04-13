@@ -1,9 +1,9 @@
-"""Pagina Risultati — Score, subscale, export CSV/MD/PDF."""
+"""Pagina Risultati — Score broadband, scale sindromiche, DSM, export."""
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
     QTableWidget, QTableWidgetItem, QHeaderView, QFileDialog,
-    QGroupBox, QFrame
+    QGroupBox, QFrame, QScrollArea
 )
 from PySide6.QtCore import Qt
 import json
@@ -14,8 +14,9 @@ from datetime import datetime
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
 from core.scorer import (
     build_score_report, report_to_csv, report_to_json,
-    CBCL_SUBSCALES, ALL_ITEMS
+    CBCL_SUBSCALES, ALL_ITEMS, build_full_profile
 )
+from scorer.cbcl_scorer import Compilatore, CBCLProfile, SYNDROME_SCALES, DSM_SCALES
 
 
 class ResultsPage(QWidget):
@@ -26,42 +27,83 @@ class ResultsPage(QWidget):
         self._setup_ui()
 
     def _setup_ui(self):
-        layout = QVBoxLayout(self)
+        # Scroll area per contenuto lungo
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+
+        container = QWidget()
+        layout = QVBoxLayout(container)
         layout.setSpacing(16)
         layout.setContentsMargins(24, 20, 24, 20)
 
-        # Header
+        # Header + compilatore badge
         header = QHBoxLayout()
         title = QLabel("Risultati Analisi")
         title.setStyleSheet("font-size: 20px; font-weight: 800; color: #E8ECF4;")
         header.addWidget(title)
+
+        self.compilatore_badge = QLabel("")
+        self.compilatore_badge.setStyleSheet(
+            "font-size: 12px; font-weight: 700; color: #C8B5FF; "
+            "background: rgba(124,92,252,0.18); border: 1px solid rgba(124,92,252,0.35); "
+            "border-radius: 8px; padding: 4px 12px;"
+        )
+        self.compilatore_badge.setVisible(False)
+        header.addWidget(self.compilatore_badge)
+
         header.addStretch()
         layout.addLayout(header)
 
-        # Score + Stats row
-        stats_row = QHBoxLayout()
-        stats_row.setSpacing(16)
+        # === BROADBAND CARDS (Internalizing, Externalizing, Total) ===
+        broadband_row = QHBoxLayout()
+        broadband_row.setSpacing(12)
 
-        # Score card grande
-        score_card = QFrame()
-        score_card.setStyleSheet(
+        card_gradient = (
             "background: qlineargradient(x1:0, y1:0, x2:1, y2:1, "
             "stop:0 rgba(124,92,252,0.15), stop:1 rgba(185,79,255,0.08)); "
-            "border: 1px solid rgba(124,92,252,0.3); border-radius: 16px; padding: 20px;"
+            "border: 1px solid rgba(124,92,252,0.3); border-radius: 16px; padding: 16px;"
         )
-        score_layout = QVBoxLayout(score_card)
-        self.score_label = QLabel("--")
-        self.score_label.setObjectName("score_big")
-        self.score_label.setAlignment(Qt.AlignCenter)
-        score_layout.addWidget(self.score_label)
-        score_desc = QLabel("SCORE TOTALE")
-        score_desc.setObjectName("score_label")
-        score_desc.setAlignment(Qt.AlignCenter)
-        score_layout.addWidget(score_desc)
-        score_card.setFixedWidth(180)
-        stats_row.addWidget(score_card)
 
-        # Stat cards
+        self._broadband_labels = {}
+        broadband_items = [
+            ("internalizing", "INTERNALIZING", "#60A5FA"),
+            ("externalizing", "EXTERNALIZING", "#F87171"),
+            ("total", "TOTALE", "#C8B5FF"),
+        ]
+        for key, label, color in broadband_items:
+            card = QFrame()
+            card.setStyleSheet(card_gradient)
+            card_layout = QVBoxLayout(card)
+            card_layout.setSpacing(4)
+
+            val_lbl = QLabel("--")
+            val_lbl.setAlignment(Qt.AlignCenter)
+            val_lbl.setStyleSheet(f"font-size: 28px; font-weight: 900; color: {color};")
+            card_layout.addWidget(val_lbl)
+
+            pct_lbl = QLabel("")
+            pct_lbl.setAlignment(Qt.AlignCenter)
+            pct_lbl.setStyleSheet("font-size: 11px; font-weight: 600; color: #A0A8B4;")
+            card_layout.addWidget(pct_lbl)
+
+            name_lbl = QLabel(label)
+            name_lbl.setAlignment(Qt.AlignCenter)
+            name_lbl.setStyleSheet(
+                "font-size: 9px; font-weight: 800; color: #8B95A7; "
+                "letter-spacing: 1.5px; padding-top: 4px;"
+            )
+            card_layout.addWidget(name_lbl)
+
+            self._broadband_labels[key] = (val_lbl, pct_lbl)
+            broadband_row.addWidget(card)
+
+        layout.addLayout(broadband_row)
+
+        # Stats row (sotto broadband)
+        stats_row = QHBoxLayout()
+        stats_row.setSpacing(12)
+
         self._stat_labels = {}
         stat_items = [
             ("items_scored", "Completati", "#34D399"),
@@ -72,8 +114,8 @@ class ResultsPage(QWidget):
         for key, label, color in stat_items:
             card = QFrame()
             card.setStyleSheet(
-                f"background-color: #141922; border: 1px solid #1E2433; "
-                f"border-radius: 12px; padding: 12px;"
+                "background-color: #141922; border: 1px solid #1E2433; "
+                "border-radius: 12px; padding: 10px;"
             )
             card_layout = QVBoxLayout(card)
             card_layout.setSpacing(4)
@@ -94,21 +136,37 @@ class ResultsPage(QWidget):
 
         layout.addLayout(stats_row)
 
-        # Tabella subscale
-        sub_group = QGroupBox("Subscale DSM-Oriented")
-        sub_layout = QVBoxLayout(sub_group)
+        # === TABELLA SCALE SINDROMICHE ===
+        syn_group = QGroupBox("Scale Sindromiche")
+        syn_layout = QVBoxLayout(syn_group)
 
-        self.subscale_table = QTableWidget()
-        self.subscale_table.setColumnCount(3)
-        self.subscale_table.setHorizontalHeaderLabels(["Subscale", "Score", "Items Mancanti"])
-        self.subscale_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
-        self.subscale_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
-        self.subscale_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.subscale_table.setEditTriggers(QTableWidget.NoEditTriggers)
-        self.subscale_table.verticalHeader().setVisible(False)
-        self.subscale_table.setAlternatingRowColors(True)
-        sub_layout.addWidget(self.subscale_table)
-        layout.addWidget(sub_group)
+        self.syndrome_table = QTableWidget()
+        self.syndrome_table.setColumnCount(5)
+        self.syndrome_table.setHorizontalHeaderLabels(["Cod.", "Scala", "Raw", "Max", "Missing"])
+        self.syndrome_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.Stretch)
+        for col in [0, 2, 3, 4]:
+            self.syndrome_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        self.syndrome_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.syndrome_table.verticalHeader().setVisible(False)
+        self.syndrome_table.setAlternatingRowColors(True)
+        syn_layout.addWidget(self.syndrome_table)
+        layout.addWidget(syn_group)
+
+        # === TABELLA SCALE DSM ===
+        dsm_group = QGroupBox("Scale DSM-Oriented")
+        dsm_layout = QVBoxLayout(dsm_group)
+
+        self.dsm_table = QTableWidget()
+        self.dsm_table.setColumnCount(4)
+        self.dsm_table.setHorizontalHeaderLabels(["Scala", "Raw", "Max", "Missing"])
+        self.dsm_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        for col in [1, 2, 3]:
+            self.dsm_table.horizontalHeader().setSectionResizeMode(col, QHeaderView.ResizeToContents)
+        self.dsm_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.dsm_table.verticalHeader().setVisible(False)
+        self.dsm_table.setAlternatingRowColors(True)
+        dsm_layout.addWidget(self.dsm_table)
+        layout.addWidget(dsm_group)
 
         # Export buttons
         export_row = QHBoxLayout()
@@ -119,6 +177,7 @@ class ResultsPage(QWidget):
             ("Esporta MD", self._export_md),
             ("Esporta PDF", self._export_pdf),
             ("Esporta JSON", self._export_json),
+            ("Esporta Excel", self._export_excel),
         ]:
             btn = QPushButton(btn_text)
             btn.setObjectName("export_btn")
@@ -128,10 +187,49 @@ class ResultsPage(QWidget):
 
         layout.addLayout(export_row)
 
+        scroll.setWidget(container)
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
     def update_results(self, report: dict):
         self._report = report
-        self.score_label.setText(str(report.get("total_score", 0)))
 
+        # Compilatore badge
+        comp = report.get("compilatore", "")
+        if comp:
+            label = "Madre (MD)" if comp == "MD" else "Padre (PD)"
+            self.compilatore_badge.setText(label)
+            self.compilatore_badge.setVisible(True)
+        else:
+            self.compilatore_badge.setVisible(False)
+
+        # Profile ricco (se disponibile)
+        profile = report.get("_profile")
+
+        if profile and isinstance(profile, CBCLProfile):
+            self._update_from_profile(profile, report)
+        else:
+            self._update_from_flat(report)
+
+    def _update_from_profile(self, profile: CBCLProfile, report: dict):
+        """Aggiorna UI con CBCLProfile completo."""
+
+        # Broadband cards
+        for key in ["internalizing", "externalizing"]:
+            sr = profile.broadband.get(key)
+            if sr:
+                val_lbl, pct_lbl = self._broadband_labels[key]
+                val_lbl.setText(f"{sr.raw_score}/{sr.max_score}")
+                pct_lbl.setText(f"{sr.pct}%")
+
+        # Total
+        val_lbl, pct_lbl = self._broadband_labels["total"]
+        val_lbl.setText(f"{profile.total.raw_score}/{profile.total.max_score}")
+        pct_lbl.setText(f"{profile.total.pct}%")
+
+        # Statistics
         stats = report.get("statistics", {})
         for key, lbl in self._stat_labels.items():
             val = stats.get(key, "--")
@@ -140,29 +238,124 @@ class ResultsPage(QWidget):
             else:
                 lbl.setText(str(val))
 
+        # Syndrome table (8 scales + Other)
+        rows = list(profile.syndrome.values()) + [profile.other]
+        self.syndrome_table.setRowCount(len(rows))
+        for i, sr in enumerate(rows):
+            code = ""
+            if sr.key in SYNDROME_SCALES:
+                code = SYNDROME_SCALES[sr.key]["code"]
+            self.syndrome_table.setItem(i, 0, QTableWidgetItem(code))
+            self.syndrome_table.setItem(i, 1, QTableWidgetItem(sr.label_it))
+            raw_item = QTableWidgetItem(str(sr.raw_score))
+            raw_item.setTextAlignment(Qt.AlignCenter)
+            self.syndrome_table.setItem(i, 2, raw_item)
+            max_item = QTableWidgetItem(str(sr.max_score))
+            max_item.setTextAlignment(Qt.AlignCenter)
+            self.syndrome_table.setItem(i, 3, max_item)
+            miss_item = QTableWidgetItem(str(len(sr.missing_items)))
+            miss_item.setTextAlignment(Qt.AlignCenter)
+            self.syndrome_table.setItem(i, 4, miss_item)
+
+        # DSM table (6 scales)
+        dsm_rows = list(profile.dsm.values())
+        self.dsm_table.setRowCount(len(dsm_rows))
+        for i, sr in enumerate(dsm_rows):
+            self.dsm_table.setItem(i, 0, QTableWidgetItem(sr.label_it))
+            raw_item = QTableWidgetItem(str(sr.raw_score))
+            raw_item.setTextAlignment(Qt.AlignCenter)
+            self.dsm_table.setItem(i, 1, raw_item)
+            max_item = QTableWidgetItem(str(sr.max_score))
+            max_item.setTextAlignment(Qt.AlignCenter)
+            self.dsm_table.setItem(i, 2, max_item)
+            miss_item = QTableWidgetItem(str(len(sr.missing_items)))
+            miss_item.setTextAlignment(Qt.AlignCenter)
+            self.dsm_table.setItem(i, 3, miss_item)
+
+    def _update_from_flat(self, report: dict):
+        """Fallback: aggiorna UI dal report flat (vecchi progetti senza _profile)."""
+        total = report.get("total_score", 0)
+        val_lbl, pct_lbl = self._broadband_labels["total"]
+        val_lbl.setText(str(total))
+        pct_lbl.setText("")
+
+        # Svuota broadband non disponibili
+        for key in ["internalizing", "externalizing"]:
+            val_lbl, pct_lbl = self._broadband_labels[key]
+            val_lbl.setText("--")
+            pct_lbl.setText("")
+
+        # Statistics
+        stats = report.get("statistics", {})
+        for key, lbl in self._stat_labels.items():
+            val = stats.get(key, "--")
+            if key == "mean_confidence" and isinstance(val, float):
+                lbl.setText(f"{val:.0%}")
+            else:
+                lbl.setText(str(val))
+
+        # Tutte le subscale nella tabella sindromica
         subscales = report.get("subscale_scores", {})
-        self.subscale_table.setRowCount(len(subscales))
-        for row, (name, data) in enumerate(subscales.items()):
-            self.subscale_table.setItem(row, 0, QTableWidgetItem(name.replace("_", " ")))
-            score_item = QTableWidgetItem(str(data.get("score", 0)))
-            score_item.setTextAlignment(Qt.AlignCenter)
-            self.subscale_table.setItem(row, 1, score_item)
+        syndrome_rows = [(k, v) for k, v in subscales.items()
+                         if isinstance(v, dict) and v.get("type") in ("syndrome", None)]
+        dsm_rows = [(k, v) for k, v in subscales.items()
+                    if isinstance(v, dict) and v.get("type") == "dsm"]
+
+        if not syndrome_rows and not dsm_rows:
+            # Vecchio formato senza type: mostra tutto nel sindromiche
+            syndrome_rows = list(subscales.items())
+
+        self.syndrome_table.setRowCount(len(syndrome_rows))
+        for i, (name, data) in enumerate(syndrome_rows):
+            self.syndrome_table.setItem(i, 0, QTableWidgetItem(""))
+            self.syndrome_table.setItem(i, 1, QTableWidgetItem(
+                data.get("label_it", name.replace("_", " "))))
+            raw_item = QTableWidgetItem(str(data.get("score", 0)))
+            raw_item.setTextAlignment(Qt.AlignCenter)
+            self.syndrome_table.setItem(i, 2, raw_item)
+            max_item = QTableWidgetItem(str(data.get("max_score", "")))
+            max_item.setTextAlignment(Qt.AlignCenter)
+            self.syndrome_table.setItem(i, 3, max_item)
             miss_item = QTableWidgetItem(str(data.get("items_missing", 0)))
             miss_item.setTextAlignment(Qt.AlignCenter)
-            self.subscale_table.setItem(row, 2, miss_item)
+            self.syndrome_table.setItem(i, 4, miss_item)
 
-    def update_from_form(self, form_items: dict):
-        report = build_score_report(form_items, session_id="desktop_manual")
+        self.dsm_table.setRowCount(len(dsm_rows))
+        for i, (name, data) in enumerate(dsm_rows):
+            self.dsm_table.setItem(i, 0, QTableWidgetItem(
+                data.get("label_it", name.replace("_", " "))))
+            raw_item = QTableWidgetItem(str(data.get("score", 0)))
+            raw_item.setTextAlignment(Qt.AlignCenter)
+            self.dsm_table.setItem(i, 1, raw_item)
+            max_item = QTableWidgetItem(str(data.get("max_score", "")))
+            max_item.setTextAlignment(Qt.AlignCenter)
+            self.dsm_table.setItem(i, 2, max_item)
+            miss_item = QTableWidgetItem(str(data.get("items_missing", 0)))
+            miss_item.setTextAlignment(Qt.AlignCenter)
+            self.dsm_table.setItem(i, 3, miss_item)
+
+    def update_from_form(self, form_items: dict,
+                         compilatore: Compilatore = Compilatore.MADRE,
+                         sex: str = None, age: int = None):
+        report = build_score_report(
+            form_items, session_id="desktop_manual",
+            compilatore=compilatore, sex=sex, age=age,
+        )
         self.update_results(report)
         self._report = report
 
     def reset(self):
         """Azzera i risultati al loro stato iniziale."""
         self._report = None
-        self.score_label.setText("--")
+        for key in self._broadband_labels:
+            val_lbl, pct_lbl = self._broadband_labels[key]
+            val_lbl.setText("--")
+            pct_lbl.setText("")
         for lbl in self._stat_labels.values():
             lbl.setText("--")
-        self.subscale_table.setRowCount(0)
+        self.syndrome_table.setRowCount(0)
+        self.dsm_table.setRowCount(0)
+        self.compilatore_badge.setVisible(False)
 
     def _get_export_report(self) -> dict:
         if not self._report:
@@ -199,6 +392,57 @@ class ResultsPage(QWidget):
         if path:
             self._safe_write(path, report_to_json(report))
 
+    def _export_excel(self):
+        """Export nel template Excel CBCL_6-18.xlt."""
+        if not self._report:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Nessun dato", "Nessun risultato disponibile.")
+            return
+
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Salva Excel", "cbcl_results.xlsx", "Excel (*.xlsx)")
+        if not path:
+            return
+
+        try:
+            from scorer.excel_export import export_to_excel
+            from scorer.cbcl_scorer import Compilatore
+
+            comp_val = self._report.get("compilatore", "MD")
+            compilatore = Compilatore.MADRE if comp_val == "MD" else Compilatore.PADRE
+
+            # Estrai risposte flat
+            responses = {}
+            for item_id, item_data in self._report.get("items", {}).items():
+                val = item_data.get("value") if isinstance(item_data, dict) else item_data
+                if val is not None:
+                    try:
+                        k = int(item_id)
+                    except (ValueError, TypeError):
+                        k = str(item_id)
+                    responses[k] = int(val)
+
+            result_path = export_to_excel(
+                responses=responses,
+                compilatore=compilatore,
+                output_path=path,
+            )
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.information(self, "Esportato", f"Excel salvato:\n{result_path}")
+
+        except FileNotFoundError as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Template mancante",
+                                f"Template Excel non trovato:\n{e}")
+        except ImportError:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Modulo mancante",
+                                "Esportazione Excel richiede 'openpyxl'.\n\n"
+                                "Installa con: pip install openpyxl")
+        except Exception as e:
+            from PySide6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Errore Excel", f"Errore generazione Excel:\n{e}")
+
     def _export_md(self):
         report = self._get_export_report()
         if not report:
@@ -208,11 +452,56 @@ class ResultsPage(QWidget):
             return
 
         lines = []
-        lines.append(f"# CBCL 6-18 — Risultati")
+        comp = report.get("compilatore", "")
+        comp_label = f" ({comp})" if comp else ""
+        lines.append(f"# CBCL 6-18 — Risultati{comp_label}")
         lines.append(f"")
         lines.append(f"**Data:** {datetime.now().strftime('%Y-%m-%d %H:%M')}")
         lines.append(f"**Score Totale:** {report.get('total_score', 0)}")
         lines.append(f"")
+
+        # Broadband
+        subscales = report.get("subscale_scores", {})
+        broadband = {k: v for k, v in subscales.items()
+                     if isinstance(v, dict) and v.get("type") == "broadband"}
+        if broadband:
+            lines.append(f"## Broadband")
+            lines.append(f"| Scala | Score | Max | % |")
+            lines.append(f"|-------|:-----:|:---:|:-:|")
+            for name, data in broadband.items():
+                lines.append(f"| {data.get('label_it', name)} | "
+                             f"{data.get('score', 0)} | {data.get('max_score', '')} | "
+                             f"{data.get('pct', '')} |")
+            lines.append(f"")
+
+        # Sindromiche
+        syndrome = {k: v for k, v in subscales.items()
+                    if isinstance(v, dict) and v.get("type") in ("syndrome", None)
+                    and k not in broadband}
+        if syndrome:
+            lines.append(f"## Scale Sindromiche")
+            lines.append(f"| Scala | Score | Max | Missing |")
+            lines.append(f"|-------|:-----:|:---:|:-------:|")
+            for name, data in syndrome.items():
+                lines.append(f"| {data.get('label_it', name.replace('_', ' '))} | "
+                             f"{data.get('score', 0)} | {data.get('max_score', '')} | "
+                             f"{data.get('items_missing', 0)} |")
+            lines.append(f"")
+
+        # DSM
+        dsm = {k: v for k, v in subscales.items()
+               if isinstance(v, dict) and v.get("type") == "dsm"}
+        if dsm:
+            lines.append(f"## Scale DSM-Oriented")
+            lines.append(f"| Scala | Score | Max | Missing |")
+            lines.append(f"|-------|:-----:|:---:|:-------:|")
+            for name, data in dsm.items():
+                lines.append(f"| {data.get('label_it', name.replace('_', ' '))} | "
+                             f"{data.get('score', 0)} | {data.get('max_score', '')} | "
+                             f"{data.get('items_missing', 0)} |")
+            lines.append(f"")
+
+        # Risposte
         lines.append(f"## Risposte")
         lines.append(f"")
         lines.append(f"| Domanda | Valore |")
@@ -220,15 +509,6 @@ class ResultsPage(QWidget):
         for item_id in ALL_ITEMS:
             val = report.get("items", {}).get(item_id, {}).get("value")
             lines.append(f"| {item_id} | {val if val is not None else '-'} |")
-        lines.append(f"")
-        lines.append(f"## Subscale")
-        lines.append(f"")
-        lines.append(f"| Subscale | Score | Mancanti |")
-        lines.append(f"|----------|:-----:|:--------:|")
-        for name, data in report.get("subscale_scores", {}).items():
-            score = data.get('score', 0) if isinstance(data, dict) else 0
-            missing = data.get('items_missing', 0) if isinstance(data, dict) else 0
-            lines.append(f"| {name.replace('_', ' ')} | {score} | {missing} |")
 
         self._safe_write(path, "\n".join(lines))
 
@@ -254,9 +534,11 @@ class ResultsPage(QWidget):
             elements = []
 
             # Titolo
+            comp = report.get("compilatore", "")
+            comp_label = f" — {comp}" if comp else ""
             title_style = ParagraphStyle('Title', parent=styles['Title'],
                                          fontSize=18, textColor=colors.HexColor('#333333'))
-            elements.append(Paragraph("CBCL 6-18 — Risultati Analisi", title_style))
+            elements.append(Paragraph(f"CBCL 6-18 — Risultati{comp_label}", title_style))
             elements.append(Spacer(1, 5*mm))
 
             # Info
@@ -268,38 +550,70 @@ class ResultsPage(QWidget):
             ))
             elements.append(Spacer(1, 8*mm))
 
-            # Tabella subscale
-            elements.append(Paragraph("Subscale DSM-Oriented", styles['Heading2']))
-            sub_data = [["Subscale", "Score", "Mancanti"]]
-            for name, data in report.get("subscale_scores", {}).items():
-                if isinstance(data, dict):
+            subscales = report.get("subscale_scores", {})
+
+            # Tabella sindromiche
+            syndrome = {k: v for k, v in subscales.items()
+                        if isinstance(v, dict) and v.get("type") in ("syndrome", None)
+                        and v.get("type") != "broadband" and v.get("type") != "dsm"}
+            if syndrome:
+                elements.append(Paragraph("Scale Sindromiche", styles['Heading2']))
+                sub_data = [["Scala", "Raw", "Max", "Missing"]]
+                for name, data in syndrome.items():
                     sub_data.append([
-                        name.replace("_", " "),
+                        data.get("label_it", name.replace("_", " ")),
                         str(data.get("score", 0)),
-                        str(data.get("items_missing", 0))
+                        str(data.get("max_score", "")),
+                        str(data.get("items_missing", 0)),
                     ])
+                sub_table = Table(sub_data, colWidths=[100*mm, 20*mm, 20*mm, 20*mm])
+                sub_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7C5CFC')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ]))
+                elements.append(sub_table)
+                elements.append(Spacer(1, 6*mm))
 
-            sub_table = Table(sub_data, colWidths=[120*mm, 25*mm, 25*mm])
-            sub_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7C5CFC')),
-                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                ('FONTSIZE', (0, 0), (-1, -1), 9),
-                ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
-                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
-                ('TOPPADDING', (0, 0), (-1, -1), 4),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-            ]))
-            elements.append(sub_table)
-            elements.append(Spacer(1, 8*mm))
+            # Tabella DSM
+            dsm = {k: v for k, v in subscales.items()
+                   if isinstance(v, dict) and v.get("type") == "dsm"}
+            if dsm:
+                elements.append(Paragraph("Scale DSM-Oriented", styles['Heading2']))
+                dsm_data = [["Scala", "Raw", "Max", "Missing"]]
+                for name, data in dsm.items():
+                    dsm_data.append([
+                        data.get("label_it", name.replace("_", " ")),
+                        str(data.get("score", 0)),
+                        str(data.get("max_score", "")),
+                        str(data.get("items_missing", 0)),
+                    ])
+                dsm_table = Table(dsm_data, colWidths=[100*mm, 20*mm, 20*mm, 20*mm])
+                dsm_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7C5CFC')),
+                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                    ('FONTSIZE', (0, 0), (-1, -1), 9),
+                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
+                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
+                    ('TOPPADDING', (0, 0), (-1, -1), 4),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                ]))
+                elements.append(dsm_table)
+                elements.append(Spacer(1, 8*mm))
 
-            # Tabella items (3 colonne per risparmiare spazio)
+            # Tabella items (3 colonne)
             elements.append(Paragraph("Dettaglio Risposte", styles['Heading2']))
             items = report.get("items", {})
             item_list = [(iid, items.get(iid, {}).get("value")) for iid in ALL_ITEMS]
 
-            # Dividi in 3 colonne
             third = (len(item_list) + 2) // 3
             col1 = item_list[:third]
             col2 = item_list[third:2*third]

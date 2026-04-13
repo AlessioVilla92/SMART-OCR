@@ -17,6 +17,7 @@ streamlit-image-coordinates>=0.4.0
 # Data handling
 pandas>=2.2.1
 Pillow>=10.3.0
+openpyxl>=3.1.0
 
 # Model persistence
 joblib>=1.4.0
