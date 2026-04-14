@@ -1,7 +1,7 @@
 """
 MainWindow — Sidebar moderna + Stacked Pages + Status Bar.
 
-Struttura UI (v3.5):
+Struttura UI (v4.0):
     ┌──────────────────────────────────────────┐
     │  SIDEBAR         │    CONTENT AREA       │
     │  ────────        │    ────────────       │
@@ -17,7 +17,7 @@ Struttura UI (v3.5):
     │  [Risultati]     │                       │
     │  [Impostazioni]  │                       │
     │  ───             │                       │
-    │  v3.5            │                       │
+    │  v4.0            │                       │
     │  Powered by...   │                       │
     ├──────────────────┴───────────────────────┤
     │  Status Bar  |  Powered by Tivanio       │
@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Smart OCR — CBCL Scanner v3.5")
+        self.setWindowTitle("Smart OCR — CBCL Scanner v4.0")
         self._worker = None
         self._current_report = None
         self._current_project_path = None   # path del progetto corrente (se aperto/salvato)
@@ -197,7 +197,7 @@ class MainWindow(QMainWindow):
         sidebar_layout.addStretch()
 
         # Versione + Powered by (colori più chiari per leggibilità)
-        ver = QLabel("v3.5")
+        ver = QLabel("v4.0")
         ver.setAlignment(Qt.AlignCenter)
         ver.setStyleSheet("color: #7B8794; font-size: 10px; font-weight: 700;")
         sidebar_layout.addWidget(ver)
@@ -502,4 +502,4 @@ class MainWindow(QMainWindow):
         self.nav_group.button(0).setChecked(True)
 
         self.status_bar.setText("Nuovo progetto: carica le 3 foto del questionario")
-        self.setWindowTitle("Smart OCR — CBCL Scanner v3.5")
+        self.setWindowTitle("Smart OCR — CBCL Scanner v4.0")
