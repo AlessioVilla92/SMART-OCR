@@ -226,18 +226,31 @@ def build_full_profile(
 
 def report_to_csv(report: dict) -> str:
     """
-    Converte il report in formato CSV.
-    Una riga con tutti i valori degli item in ordine.
-    Compatibile con Excel per scoring manuale.
+    Converte il report in formato CSV con sezioni:
+      1. TOTALE (Internal, External, Total — senza colonna Max)
+      2. RISPOSTE (valori di tutti gli item)
+      3. REPORT FINALE (aree critiche con risposta=2)
+    Separatore ';' per compatibilità Excel IT.
     """
     output = io.StringIO()
-
-    # Header: session_id + tutti gli item nell'ordine standard
-    header = ["session_id", "timestamp", "compilatore"] + ALL_ITEMS + ["total_score"]
     writer = csv.writer(output, delimiter=";")
-    writer.writerow(header)
 
-    # Valori
+    subscales = report.get("subscale_scores", {})
+    bb_int = subscales.get("internalizing", {}) if isinstance(subscales.get("internalizing"), dict) else {}
+    bb_ext = subscales.get("externalizing", {}) if isinstance(subscales.get("externalizing"), dict) else {}
+
+    # Sezione TOTALE (senza Max)
+    writer.writerow(["TOTALE"])
+    writer.writerow(["Scala", "Formula", "Raw"])
+    writer.writerow(["Internal Scala", "I + II + III", bb_int.get("score", 0)])
+    writer.writerow(["External Scala", "VII + VIII", bb_ext.get("score", 0)])
+    writer.writerow(["Total", "I + ... + Other", report.get("total_score", 0)])
+    writer.writerow([])
+
+    # Sezione Items
+    writer.writerow(["RISPOSTE"])
+    header = ["session_id", "timestamp", "compilatore"] + ALL_ITEMS + ["total_score"]
+    writer.writerow(header)
     row = [
         report["session_id"],
         report["timestamp"],
@@ -246,14 +259,46 @@ def report_to_csv(report: dict) -> str:
     for item_id in ALL_ITEMS:
         val = report["items"].get(item_id, {}).get("value", "")
         row.append("" if val is None else val)
-
     row.append(report["total_score"])
     writer.writerow(row)
+    writer.writerow([])
+
+    # Sezione REPORT FINALE (aree critiche)
+    try:
+        from scorer.scale_colors import build_report_finale
+        rf = build_report_finale(report)
+        writer.writerow(["REPORT FINALE - AREE CRITICHE (risposte = 2)"])
+        writer.writerow([f"Totale risposte critiche: {rf['total_critical']}"])
+        writer.writerow([])
+        writer.writerow(["Cod.", "Area", "N.Critiche", "N.Totale", "Item", "Domanda"])
+        for area in rf["critical_areas"]:
+            for item in area["items"]:
+                writer.writerow([
+                    area["code"],
+                    area["label"],
+                    area["n_critical"],
+                    area["n_total"],
+                    item["id"],
+                    item["text"],
+                ])
+        if rf["areas_without_critical"]:
+            writer.writerow([])
+            writer.writerow(["AREE SENZA RISPOSTE CRITICHE"])
+            for a in rf["areas_without_critical"]:
+                writer.writerow([a["code"], a["label"]])
+    except ImportError:
+        pass
 
     return output.getvalue()
 
 
 def report_to_json(report: dict) -> str:
-    """Converte il report in JSON formattato (esclude _profile non serializzabile)."""
+    """Converte il report in JSON formattato (esclude _profile non serializzabile).
+    Include la sezione 'report_finale' con le aree critiche (risposte=2)."""
     clean = {k: v for k, v in report.items() if not k.startswith("_")}
+    try:
+        from scorer.scale_colors import build_report_finale
+        clean["report_finale"] = build_report_finale(report)
+    except ImportError:
+        pass
     return json.dumps(clean, indent=2, ensure_ascii=False)

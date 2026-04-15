@@ -168,6 +168,30 @@ class ResultsPage(QWidget):
         dsm_layout.addWidget(self.dsm_table)
         layout.addWidget(dsm_group)
 
+        # === SEZIONE TOTALE (riepilogo broadband come da template Excel) ===
+        total_group = QGroupBox("TOTALE")
+        total_group.setStyleSheet(
+            "QGroupBox { font-size: 14px; font-weight: 800; color: #C8B5FF; "
+            "border: 2px solid rgba(124,92,252,0.4); border-radius: 10px; "
+            "margin-top: 12px; padding-top: 16px; }"
+            "QGroupBox::title { subcontrol-origin: margin; left: 12px; padding: 0 6px; }"
+        )
+        total_layout = QVBoxLayout(total_group)
+
+        self.total_table = QTableWidget()
+        self.total_table.setColumnCount(4)
+        self.total_table.setHorizontalHeaderLabels(["Scala", "Formula", "Raw", "Max"])
+        self.total_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.total_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.total_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.total_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeToContents)
+        self.total_table.setEditTriggers(QTableWidget.NoEditTriggers)
+        self.total_table.verticalHeader().setVisible(False)
+        self.total_table.setAlternatingRowColors(True)
+        self.total_table.setFixedHeight(140)
+        total_layout.addWidget(self.total_table)
+        layout.addWidget(total_group)
+
         # Export buttons
         export_row = QHBoxLayout()
         export_row.addStretch()
@@ -272,6 +296,42 @@ class ResultsPage(QWidget):
             miss_item.setTextAlignment(Qt.AlignCenter)
             self.dsm_table.setItem(i, 3, miss_item)
 
+        # Tabella TOTALE (3 righe: Internalizing / Externalizing / Total)
+        total_rows = [
+            ("Internal Scala", "I + II + III",
+             profile.broadband["internalizing"].raw_score,
+             profile.broadband["internalizing"].max_score),
+            ("External Scala", "VII + VIII",
+             profile.broadband["externalizing"].raw_score,
+             profile.broadband["externalizing"].max_score),
+            ("Total", "I + ... + Other",
+             profile.total.raw_score,
+             profile.total.max_score),
+        ]
+        self.total_table.setRowCount(3)
+        for i, (scala, formula, raw, mx) in enumerate(total_rows):
+            scala_item = QTableWidgetItem(scala)
+            if i == 2:
+                from PySide6.QtGui import QFont
+                f = QFont()
+                f.setBold(True)
+                scala_item.setFont(f)
+            self.total_table.setItem(i, 0, scala_item)
+            formula_item = QTableWidgetItem(formula)
+            formula_item.setTextAlignment(Qt.AlignCenter)
+            self.total_table.setItem(i, 1, formula_item)
+            raw_item = QTableWidgetItem(str(raw))
+            raw_item.setTextAlignment(Qt.AlignCenter)
+            if i == 2:
+                from PySide6.QtGui import QFont
+                f = QFont()
+                f.setBold(True)
+                raw_item.setFont(f)
+            self.total_table.setItem(i, 2, raw_item)
+            max_item = QTableWidgetItem(str(mx))
+            max_item.setTextAlignment(Qt.AlignCenter)
+            self.total_table.setItem(i, 3, max_item)
+
     def _update_from_flat(self, report: dict):
         """Fallback: aggiorna UI dal report flat (vecchi progetti senza _profile)."""
         total = report.get("total_score", 0)
@@ -334,6 +394,31 @@ class ResultsPage(QWidget):
             miss_item.setTextAlignment(Qt.AlignCenter)
             self.dsm_table.setItem(i, 3, miss_item)
 
+        # Tabella TOTALE dal flat (se presente nei subscale_scores)
+        total_rows_flat = []
+        bb_int = subscales.get("internalizing")
+        bb_ext = subscales.get("externalizing")
+        if isinstance(bb_int, dict):
+            total_rows_flat.append(("Internal Scala", "I + II + III",
+                                    bb_int.get("score", 0), bb_int.get("max_score", 64)))
+        if isinstance(bb_ext, dict):
+            total_rows_flat.append(("External Scala", "VII + VIII",
+                                    bb_ext.get("score", 0), bb_ext.get("max_score", 70)))
+        total_rows_flat.append(("Total", "I + ... + Other",
+                                report.get("total_score", 0), 244))
+        self.total_table.setRowCount(len(total_rows_flat))
+        for i, (scala, formula, raw, mx) in enumerate(total_rows_flat):
+            self.total_table.setItem(i, 0, QTableWidgetItem(scala))
+            formula_item = QTableWidgetItem(formula)
+            formula_item.setTextAlignment(Qt.AlignCenter)
+            self.total_table.setItem(i, 1, formula_item)
+            raw_item = QTableWidgetItem(str(raw))
+            raw_item.setTextAlignment(Qt.AlignCenter)
+            self.total_table.setItem(i, 2, raw_item)
+            max_item = QTableWidgetItem(str(mx))
+            max_item.setTextAlignment(Qt.AlignCenter)
+            self.total_table.setItem(i, 3, max_item)
+
     def update_from_form(self, form_items: dict,
                          compilatore: Compilatore = Compilatore.MADRE,
                          sex: str = None, age: int = None):
@@ -355,6 +440,7 @@ class ResultsPage(QWidget):
             lbl.setText("--")
         self.syndrome_table.setRowCount(0)
         self.dsm_table.setRowCount(0)
+        self.total_table.setRowCount(0)
         self.compilatore_badge.setVisible(False)
 
     def _get_export_report(self) -> dict:
@@ -474,31 +560,40 @@ class ResultsPage(QWidget):
                              f"{data.get('pct', '')} |")
             lines.append(f"")
 
-        # Sindromiche
+        # TOTALE (riepilogo come da template Excel) — senza Max
+        lines.append(f"## TOTALE")
+        lines.append(f"| Scala | Formula | Raw |")
+        lines.append(f"|-------|---------|:---:|")
+        bb_int = subscales.get("internalizing", {}) if isinstance(subscales.get("internalizing"), dict) else {}
+        bb_ext = subscales.get("externalizing", {}) if isinstance(subscales.get("externalizing"), dict) else {}
+        lines.append(f"| Internal Scala | I + II + III | {bb_int.get('score', 0)} |")
+        lines.append(f"| External Scala | VII + VIII | {bb_ext.get('score', 0)} |")
+        lines.append(f"| **Total** | **I + ... + Other** | **{report.get('total_score', 0)}** |")
+        lines.append(f"")
+
+        # Sindromiche — senza Max
         syndrome = {k: v for k, v in subscales.items()
                     if isinstance(v, dict) and v.get("type") in ("syndrome", None)
                     and k not in broadband}
         if syndrome:
             lines.append(f"## Scale Sindromiche")
-            lines.append(f"| Scala | Score | Max | Missing |")
-            lines.append(f"|-------|:-----:|:---:|:-------:|")
+            lines.append(f"| Scala | Score | Missing |")
+            lines.append(f"|-------|:-----:|:-------:|")
             for name, data in syndrome.items():
                 lines.append(f"| {data.get('label_it', name.replace('_', ' '))} | "
-                             f"{data.get('score', 0)} | {data.get('max_score', '')} | "
-                             f"{data.get('items_missing', 0)} |")
+                             f"{data.get('score', 0)} | {data.get('items_missing', 0)} |")
             lines.append(f"")
 
-        # DSM
+        # DSM — senza Max
         dsm = {k: v for k, v in subscales.items()
                if isinstance(v, dict) and v.get("type") == "dsm"}
         if dsm:
             lines.append(f"## Scale DSM-Oriented")
-            lines.append(f"| Scala | Score | Max | Missing |")
-            lines.append(f"|-------|:-----:|:---:|:-------:|")
+            lines.append(f"| Scala | Score | Missing |")
+            lines.append(f"|-------|:-----:|:-------:|")
             for name, data in dsm.items():
                 lines.append(f"| {data.get('label_it', name.replace('_', ' '))} | "
-                             f"{data.get('score', 0)} | {data.get('max_score', '')} | "
-                             f"{data.get('items_missing', 0)} |")
+                             f"{data.get('score', 0)} | {data.get('items_missing', 0)} |")
             lines.append(f"")
 
         # Risposte
@@ -509,6 +604,40 @@ class ResultsPage(QWidget):
         for item_id in ALL_ITEMS:
             val = report.get("items", {}).get(item_id, {}).get("value")
             lines.append(f"| {item_id} | {val if val is not None else '-'} |")
+        lines.append(f"")
+
+        # ───────────────────────────────────────────
+        # REPORT FINALE — Aree Critiche
+        # ───────────────────────────────────────────
+        from scorer.scale_colors import build_report_finale
+        rf = build_report_finale(report)
+
+        lines.append(f"---")
+        lines.append(f"")
+        lines.append(f"# REPORT FINALE — Aree Critiche")
+        lines.append(f"")
+        lines.append(f"_Domande con risposta = 2 (problematica marcata)_")
+        lines.append(f"")
+        lines.append(f"**Totale risposte critiche: {rf['total_critical']}**")
+        lines.append(f"")
+
+        for area in rf["critical_areas"]:
+            lines.append(f"## {area['code']} — {area['label']}")
+            lines.append(f"")
+            lines.append(f"_{area['n_critical']} risposte critiche su "
+                         f"{area['n_total']} item della scala_")
+            lines.append(f"")
+            for item in area["items"]:
+                lines.append(f"- **Item {item['id']}** — {item['text']}")
+            lines.append(f"")
+
+        if rf["areas_without_critical"]:
+            lines.append(f"### Aree senza risposte critiche")
+            lines.append(f"")
+            lines.append(", ".join(
+                f"**{a['code']}** {a['label']}"
+                for a in rf["areas_without_critical"]
+            ))
 
         self._safe_write(path, "\n".join(lines))
 
@@ -524,8 +653,13 @@ class ResultsPage(QWidget):
             from reportlab.lib.pagesizes import A4
             from reportlab.lib.units import mm
             from reportlab.lib import colors
-            from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
+            from reportlab.platypus import (
+                SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer,
+                KeepTogether, PageBreak,
+            )
             from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+            from scorer.scale_colors import SCALE_COLORS, ITEM_TO_SCALE, load_italian_questions
+            from scorer.cbcl_scorer import SYNDROME_SCALES, OTHER_PROBLEMS
 
             doc = SimpleDocTemplate(path, pagesize=A4,
                                     topMargin=20*mm, bottomMargin=20*mm,
@@ -548,53 +682,78 @@ class ResultsPage(QWidget):
                 f"Score Totale: <b>{report.get('total_score', 0)}</b>",
                 info_style
             ))
-            elements.append(Spacer(1, 8*mm))
+            elements.append(Spacer(1, 6*mm))
 
             subscales = report.get("subscale_scores", {})
 
-            # Tabella sindromiche
-            syndrome = {k: v for k, v in subscales.items()
-                        if isinstance(v, dict) and v.get("type") in ("syndrome", None)
-                        and v.get("type") != "broadband" and v.get("type") != "dsm"}
-            if syndrome:
-                elements.append(Paragraph("Scale Sindromiche", styles['Heading2']))
-                sub_data = [["Scala", "Raw", "Max", "Missing"]]
-                for name, data in syndrome.items():
-                    sub_data.append([
-                        data.get("label_it", name.replace("_", " ")),
-                        str(data.get("score", 0)),
-                        str(data.get("max_score", "")),
-                        str(data.get("items_missing", 0)),
-                    ])
-                sub_table = Table(sub_data, colWidths=[100*mm, 20*mm, 20*mm, 20*mm])
-                sub_table.setStyle(TableStyle([
-                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7C5CFC')),
-                    ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                    ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-                    ('FONTSIZE', (0, 0), (-1, -1), 9),
-                    ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
-                    ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
-                    ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
-                    ('TOPPADDING', (0, 0), (-1, -1), 4),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
-                ]))
-                elements.append(sub_table)
-                elements.append(Spacer(1, 6*mm))
+            # Ordine scale sindromiche da visualizzare
+            syndrome_order = [
+                "anxious_depressed", "withdrawn_depressed", "somatic_complaints",
+                "social_problems", "thought_problems", "attention_problems",
+                "rule_breaking", "aggressive_behavior",
+            ]
 
-            # Tabella DSM
+            # ─── TABELLA SCALE SINDROMICHE (senza Max, con badge colore) ───
+            elements.append(Paragraph("Scale Sindromiche", styles['Heading2']))
+            sub_data = [["Cod.", "Scala", "Raw", "Missing"]]
+            row_colors = [colors.white]  # riga header
+            for key in syndrome_order:
+                data = subscales.get(key, {})
+                if not data:
+                    continue
+                info = SCALE_COLORS.get(key, {})
+                sub_data.append([
+                    info.get("code", ""),
+                    data.get("label_it", info.get("label", key)),
+                    str(data.get("score", 0)),
+                    str(data.get("items_missing", 0)),
+                ])
+                row_colors.append(colors.HexColor(info.get("bg", "#FFFFFF")))
+            # Riga Other
+            other_data = subscales.get("other_problems", {})
+            if other_data:
+                info = SCALE_COLORS["other_problems"]
+                sub_data.append([
+                    info["code"],
+                    other_data.get("label_it", info["label"]),
+                    str(other_data.get("score", 0)),
+                    str(other_data.get("items_missing", 0)),
+                ])
+                row_colors.append(colors.HexColor(info["bg"]))
+
+            sub_table = Table(sub_data, colWidths=[15*mm, 110*mm, 20*mm, 25*mm])
+            sub_style = [
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7C5CFC')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 9),
+                ('ALIGN', (0, 0), (0, -1), 'CENTER'),
+                ('ALIGN', (2, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+                ('FONTNAME', (0, 1), (0, -1), 'Helvetica-Bold'),
+            ]
+            # Sfondi per singola riga (colore scala)
+            for i, bg in enumerate(row_colors[1:], start=1):
+                sub_style.append(('BACKGROUND', (0, i), (-1, i), bg))
+            sub_table.setStyle(TableStyle(sub_style))
+            elements.append(sub_table)
+            elements.append(Spacer(1, 6*mm))
+
+            # ─── TABELLA DSM (senza Max) ───
             dsm = {k: v for k, v in subscales.items()
                    if isinstance(v, dict) and v.get("type") == "dsm"}
             if dsm:
                 elements.append(Paragraph("Scale DSM-Oriented", styles['Heading2']))
-                dsm_data = [["Scala", "Raw", "Max", "Missing"]]
+                dsm_data = [["Scala", "Raw", "Missing"]]
                 for name, data in dsm.items():
                     dsm_data.append([
                         data.get("label_it", name.replace("_", " ")),
                         str(data.get("score", 0)),
-                        str(data.get("max_score", "")),
                         str(data.get("items_missing", 0)),
                     ])
-                dsm_table = Table(dsm_data, colWidths=[100*mm, 20*mm, 20*mm, 20*mm])
+                dsm_table = Table(dsm_data, colWidths=[125*mm, 20*mm, 25*mm])
                 dsm_table.setStyle(TableStyle([
                     ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7C5CFC')),
                     ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
@@ -603,13 +762,39 @@ class ResultsPage(QWidget):
                     ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
                     ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
                     ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#F5F5F5')]),
-                    ('TOPPADDING', (0, 0), (-1, -1), 4),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+                    ('TOPPADDING', (0, 0), (-1, -1), 5),
+                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
                 ]))
                 elements.append(dsm_table)
-                elements.append(Spacer(1, 8*mm))
+                elements.append(Spacer(1, 6*mm))
 
-            # Tabella items (3 colonne)
+            # ─── TABELLA TOTALE (senza Max) ───
+            elements.append(Paragraph("TOTALE", styles['Heading2']))
+            bb_int = subscales.get("internalizing", {}) if isinstance(subscales.get("internalizing"), dict) else {}
+            bb_ext = subscales.get("externalizing", {}) if isinstance(subscales.get("externalizing"), dict) else {}
+            total_data = [
+                ["Scala", "Formula", "Raw"],
+                ["Internal Scala", "I + II + III", str(bb_int.get("score", 0))],
+                ["External Scala", "VII + VIII", str(bb_ext.get("score", 0))],
+                ["Total", "I + ... + Other", str(report.get("total_score", 0))],
+            ]
+            total_table = Table(total_data, colWidths=[70*mm, 70*mm, 30*mm])
+            total_table.setStyle(TableStyle([
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#7C5CFC')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, -1), 10),
+                ('ALIGN', (1, 0), (-1, -1), 'CENTER'),
+                ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#CCCCCC')),
+                ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#F0E6FF')),
+                ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+                ('TOPPADDING', (0, 0), (-1, -1), 5),
+                ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+            ]))
+            elements.append(total_table)
+            elements.append(Spacer(1, 8*mm))
+
+            # ─── DETTAGLIO RISPOSTE (neutro, 3 colonne) ───
             elements.append(Paragraph("Dettaglio Risposte", styles['Heading2']))
             items = report.get("items", {})
             item_list = [(iid, items.get(iid, {}).get("value")) for iid in ALL_ITEMS]
@@ -646,6 +831,85 @@ class ResultsPage(QWidget):
             ]))
             elements.append(item_table)
 
+            # ═══════════════════════════════════════════════════
+            #  REPORT FINALE — Aree critiche (risposte = 2)
+            # ═══════════════════════════════════════════════════
+            elements.append(PageBreak())
+
+            header_style = ParagraphStyle(
+                'ReportFinalHeader', parent=styles['Title'],
+                fontSize=16, textColor=colors.HexColor('#7C5CFC'),
+                alignment=1,  # center
+            )
+            elements.append(Paragraph("REPORT FINALE — Aree Critiche", header_style))
+            subtitle_style = ParagraphStyle(
+                'ReportFinalSub', parent=styles['Normal'],
+                fontSize=10, alignment=1, textColor=colors.HexColor('#555555'),
+                spaceAfter=8,
+            )
+            elements.append(Paragraph(
+                "Domande con risposta = 2 (problematica marcata)", subtitle_style))
+            elements.append(Spacer(1, 4*mm))
+
+            from scorer.scale_colors import build_report_finale
+            rf = build_report_finale(report)
+
+            for area in rf["critical_areas"]:
+                banner_text = f"<b>{area['code']} — {area['label'].upper()}</b>"
+                counter_text = f"{area['n_critical']} risposte critiche su {area['n_total']} item della scala"
+
+                area_rows = [[Paragraph(banner_text, ParagraphStyle(
+                    'Banner', parent=styles['Normal'], fontSize=12,
+                    textColor=colors.white, leading=16,
+                ))]]
+                area_rows.append([Paragraph(counter_text, ParagraphStyle(
+                    'Counter', parent=styles['Normal'], fontSize=9,
+                    textColor=colors.HexColor(area['color_dark']), leading=12,
+                ))])
+                for item in area["items"]:
+                    line = f"<font color='{area['color_dark']}'><b>●</b></font>  " \
+                           f"<b>Item {item['id']}</b>  —  {item['text']}"
+                    area_rows.append([Paragraph(line, ParagraphStyle(
+                        'CriticalItem', parent=styles['Normal'], fontSize=9,
+                        leading=12, leftIndent=8,
+                    ))])
+
+                area_table = Table(area_rows, colWidths=[180*mm])
+                area_table.setStyle(TableStyle([
+                    ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor(area['color_dark'])),
+                    ('LEFTPADDING', (0, 0), (-1, 0), 10),
+                    ('TOPPADDING', (0, 0), (-1, 0), 6),
+                    ('BOTTOMPADDING', (0, 0), (-1, 0), 6),
+                    ('BACKGROUND', (0, 1), (-1, 1), colors.HexColor(area['color_bg'])),
+                    ('LEFTPADDING', (0, 1), (-1, 1), 10),
+                    ('TOPPADDING', (0, 1), (-1, 1), 4),
+                    ('BOTTOMPADDING', (0, 1), (-1, 1), 4),
+                    ('BACKGROUND', (0, 2), (-1, -1), colors.white),
+                    ('LEFTPADDING', (0, 2), (-1, -1), 10),
+                    ('RIGHTPADDING', (0, 2), (-1, -1), 10),
+                    ('TOPPADDING', (0, 2), (-1, -1), 3),
+                    ('BOTTOMPADDING', (0, 2), (-1, -1), 3),
+                    ('LINEBEFORE', (0, 1), (0, -1), 3, colors.HexColor(area['color_dark'])),
+                    ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor(area['color_dark'])),
+                ]))
+                elements.append(KeepTogether(area_table))
+                elements.append(Spacer(1, 5*mm))
+
+            # Aree senza criticita'
+            if rf["areas_without_critical"]:
+                elements.append(Spacer(1, 4*mm))
+                no_crit_style = ParagraphStyle(
+                    'NoCrit', parent=styles['Normal'], fontSize=9,
+                    textColor=colors.HexColor('#666666'), leading=13,
+                )
+                elements.append(Paragraph(
+                    "<b>Aree senza risposte critiche:</b>", no_crit_style))
+                labels = [
+                    f"<font color='{a['color_dark']}'><b>{a['code']}</b></font> {a['label']}"
+                    for a in rf["areas_without_critical"]
+                ]
+                elements.append(Paragraph("  ·  ".join(labels), no_crit_style))
+
             doc.build(elements)
 
             from PySide6.QtWidgets import QMessageBox
@@ -660,4 +924,6 @@ class ResultsPage(QWidget):
             )
         except Exception as e:
             from PySide6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Errore PDF", f"Errore generazione PDF:\n{e}")
+            import traceback
+            QMessageBox.warning(self, "Errore PDF",
+                                f"Errore generazione PDF:\n{e}\n\n{traceback.format_exc()[:500]}")

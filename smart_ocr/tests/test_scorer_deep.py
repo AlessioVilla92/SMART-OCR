@@ -288,10 +288,14 @@ check("report_to_json include compilatore",
 
 # report_to_csv
 csv_out = report_to_csv(report)
-check("report_to_csv include header compilatore",
-      "compilatore" in csv_out.split("\n")[0])
+check("report_to_csv include sezione TOTALE",
+      "TOTALE" in csv_out)
+check("report_to_csv include compilatore",
+      "compilatore" in csv_out)
 check("report_to_csv usa separatore ;",
       ";" in csv_out)
+check("report_to_csv include Internal/External/Total",
+      "Internal Scala" in csv_out and "External Scala" in csv_out)
 
 # ─── 9. VALIDAZIONE E SCORABILITA' ──────────────────────────────────
 print("\n--- 9. VALIDAZIONE E SCORABILITA' ---")

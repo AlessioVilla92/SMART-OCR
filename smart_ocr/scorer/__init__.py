@@ -19,3 +19,7 @@ from .cbcl_scorer import (
     all_cbcl_items,
     item_to_excel_row,
 )
+from .scale_colors import (
+    SCALE_COLORS, ITEM_TO_SCALE, SYNDROME_ORDER,
+    load_italian_questions, build_report_finale,
+)
