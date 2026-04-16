@@ -116,7 +116,7 @@ class HomePage(QWidget):
         pages = [
             ("page_4", "Pagina 4 (items 1-54)"),
             ("page_5", "Pagina 5 (items 55-85)"),
-            ("page_6", "Pagina 6 (items 86-112, 113a-c)"),
+            ("page_6", "Pagina 6 (items 86-113)"),
         ]
 
         for col, (page_key, page_desc) in enumerate(pages):

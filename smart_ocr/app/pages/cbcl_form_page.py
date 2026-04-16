@@ -226,9 +226,17 @@ class CBCLFormPage(QWidget):
                 all_items.append((item_id, text))
 
         # Layout 2 colonne: prima metà a sinistra, seconda metà a destra
+        # Item 113 unificato: mostriamo 113a come "113" (unico attivo);
+        # 113b/113c restano presenti ma disattivati (sempre 0) per non alterare
+        # la griglia OMR ne' il modello YOLO.
         mid = (len(all_items) + 1) // 2
         for i, (item_id, text) in enumerate(all_items):
-            widget = CBCLItemWidget(item_id, text)
+            if item_id == "113a":
+                widget = CBCLItemWidget(item_id, text, display_id="113")
+            elif item_id in ("113b", "113c"):
+                widget = CBCLItemWidget(item_id, text, disabled=True)
+            else:
+                widget = CBCLItemWidget(item_id, text)
             widget.value_changed.connect(self._on_item_changed)
             self._item_widgets[item_id] = widget
 

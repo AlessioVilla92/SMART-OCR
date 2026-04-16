@@ -33,16 +33,30 @@ class CBCLItemWidget(QFrame):
 
     value_changed = Signal(str, int)
 
-    def __init__(self, item_id: str, question_text: str, parent=None):
+    def __init__(self, item_id: str, question_text: str, parent=None,
+                 *, display_id: str = None, disabled: bool = False):
         super().__init__(parent)
         self.item_id = item_id
         self.question_text = question_text
+        self._display_id = display_id or item_id
+        self._disabled = disabled
         self._value = None
         self._confidence = 0.0
         self._state = "pending"
         self._setup_ui()
-        # Stato iniziale neutro
-        self._apply_state(COLORS["neutral"], "")
+        if self._disabled:
+            # Item permanentemente disabilitato: valore forzato a 0, non modificabile.
+            self._value = 0
+            self.buttons[0].setChecked(True)
+            for btn in self.buttons.values():
+                btn.setEnabled(False)
+            self.text_label.setStyleSheet(
+                "font-size: 14px; color: #6B7280; line-height: 140%; font-style: italic;"
+            )
+            self._apply_state(COLORS["neutral"], "DISATTIVATA")
+        else:
+            # Stato iniziale neutro
+            self._apply_state(COLORS["neutral"], "")
 
     def _setup_ui(self):
         # Layout principale orizzontale: striscia colorata + contenuto
@@ -67,8 +81,8 @@ class CBCLItemWidget(QFrame):
         header = QHBoxLayout()
         header.setSpacing(12)
 
-        # Numero in pillola colorata
-        self.num_label = QLabel(self.item_id)
+        # Numero in pillola colorata (display_id per override visuale; item_id resta l'ID logico)
+        self.num_label = QLabel(self._display_id)
         self.num_label.setMinimumWidth(40)
         self.num_label.setAlignment(Qt.AlignCenter)
         self.num_label.setStyleSheet(self._num_pill_style(COLORS["neutral"]))
@@ -185,6 +199,9 @@ class CBCLItemWidget(QFrame):
 
     def set_result(self, value, confidence, flag):
         """Determina lo stato del widget dai risultati del modello."""
+        if self._disabled:
+            # Item disattivato: il modello non puo' alterarne lo stato.
+            return
         self._value = value
         self._confidence = confidence
 
