@@ -1,5 +1,5 @@
 """
-Smart OCR v3.5 — App Desktop CBCL Scanner.
+Smart OCR v5.0 — App Desktop CBCL Scanner.
 Entry point per l'applicazione PySide6.
 
 Avvio: python desktop.py

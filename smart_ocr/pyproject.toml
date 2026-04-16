@@ -1,6 +1,6 @@
 [project]
 name = "smart-ocr"
-version = "1.0.0"
+version = "5.0.0"
 description = "Lettura automatica questionari CBCL"
 requires-python = ">=3.11"
 

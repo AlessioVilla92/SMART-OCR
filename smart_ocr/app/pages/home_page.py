@@ -1,4 +1,4 @@
-"""Pagina Home — Upload foto (con drag & drop) e avvio analisi."""
+"""Pagina Home — Upload foto o PDF (con drag & drop) e avvio analisi."""
 
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton,
@@ -10,6 +10,7 @@ from PySide6.QtGui import QPixmap, QDragEnterEvent, QDropEvent
 from pathlib import Path
 
 _IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tiff", ".tif", ".webp"}
+_PDF_EXTENSIONS = {".pdf"}
 
 _DROP_IDLE_STYLE = (
     "background: #1E293B; border: 2px dashed #334155; "
@@ -58,11 +59,58 @@ class _DropZone(QLabel):
             self.file_dropped.emit(path)
 
 
+class _PdfDropZone(QLabel):
+    """Area di drop dedicata ai file PDF."""
+
+    file_dropped = Signal(str)
+
+    def __init__(self, parent=None):
+        super().__init__("Trascina PDF qui\no clicca\nCARICA PDF", parent)
+        self.setFixedSize(200, 280)
+        self.setAlignment(Qt.AlignCenter)
+        self.setStyleSheet(
+            "background: #1E293B; border: 2px dashed #7C5CFC; "
+            "border-radius: 8px; color: #9B7FFF; font-size: 11px; font-weight: bold;"
+        )
+        self.setAcceptDrops(True)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            urls = event.mimeData().urls()
+            if urls and Path(urls[0].toLocalFile()).suffix.lower() in _PDF_EXTENSIONS:
+                event.acceptProposedAction()
+                self.setStyleSheet(
+                    "background: rgba(124,92,252,0.18); border: 2px dashed #A78BFA; "
+                    "border-radius: 8px; color: #C8B5FF; font-size: 11px; font-weight: bold;"
+                )
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet(
+            "background: #1E293B; border: 2px dashed #7C5CFC; "
+            "border-radius: 8px; color: #9B7FFF; font-size: 11px; font-weight: bold;"
+        )
+
+    def dropEvent(self, event: QDropEvent):
+        self.setStyleSheet(
+            "background: #1E293B; border: 2px dashed #7C5CFC; "
+            "border-radius: 8px; color: #9B7FFF; font-size: 11px; font-weight: bold;"
+        )
+        urls = event.mimeData().urls()
+        if not urls:
+            return
+        path = urls[0].toLocalFile()
+        if Path(path).suffix.lower() in _PDF_EXTENSIONS:
+            event.acceptProposedAction()
+            self.file_dropped.emit(path)
+
+
 class HomePage(QWidget):
-    """Pagina caricamento foto e analisi."""
+    """Pagina caricamento foto/PDF e analisi."""
 
     analysis_requested = Signal(dict)  # {page: path}
-    reset_requested = Signal()         # emesso quando l'utente vuole azzerare il progetto
+    reset_requested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -70,11 +118,12 @@ class HomePage(QWidget):
         self.setAcceptDrops(True)
         self._setup_ui()
 
-    # ── drag & drop sulla pagina intera ──
+    # ── drag & drop sulla pagina intera (immagini + PDF) ──
     def dragEnterEvent(self, event: QDragEnterEvent):
         if event.mimeData().hasUrls():
             for url in event.mimeData().urls():
-                if Path(url.toLocalFile()).suffix.lower() in _IMAGE_EXTENSIONS:
+                ext = Path(url.toLocalFile()).suffix.lower()
+                if ext in _IMAGE_EXTENSIONS or ext in _PDF_EXTENSIONS:
                     event.acceptProposedAction()
                     return
         event.ignore()
@@ -83,7 +132,11 @@ class HomePage(QWidget):
         urls = event.mimeData().urls()
         if not urls:
             return
-        # Pagine libere in ordine
+        first = urls[0].toLocalFile()
+        if Path(first).suffix.lower() in _PDF_EXTENSIONS:
+            event.acceptProposedAction()
+            self._open_pdf(first)
+            return
         page_order = ["page_4", "page_5", "page_6"]
         free = [p for p in page_order if p not in self._photo_paths]
         for url in urls:
@@ -104,11 +157,45 @@ class HomePage(QWidget):
         title.setStyleSheet("font-size: 18px; font-weight: bold; color: #F1F5F9;")
         layout.addWidget(title)
 
-        # Griglia upload 3 pagine
+        # Griglia upload: col 0 = PDF, col 1-3 = foto singole, col separatore
         upload_group = QGroupBox("Foto questionario (3 pagine)")
         upload_group.setStyleSheet("QGroupBox { font-size: 13px; font-weight: bold; }")
         upload_grid = QGridLayout(upload_group)
+        upload_grid.setSpacing(12)
 
+        # ── COLONNA 0: PDF ──
+        pdf_label = QLabel("Scansione PDF")
+        pdf_label.setStyleSheet("font-size: 11px; color: #A78BFA; font-weight: bold;")
+        pdf_label.setAlignment(Qt.AlignCenter)
+        upload_grid.addWidget(pdf_label, 0, 0)
+
+        self._pdf_preview = _PdfDropZone()
+        self._pdf_preview.file_dropped.connect(self._open_pdf)
+        upload_grid.addWidget(self._pdf_preview, 1, 0)
+
+        pdf_btn = QPushButton("CARICA PDF")
+        pdf_btn.setStyleSheet(
+            "QPushButton { padding: 8px 16px; background: #7C5CFC; color: white; "
+            "border-radius: 6px; font-weight: bold; }"
+            "QPushButton:hover { background: #9B7FFF; }"
+        )
+        pdf_btn.clicked.connect(self._load_pdf)
+        upload_grid.addWidget(pdf_btn, 2, 0)
+
+        self._pdf_status = QLabel("")
+        self._pdf_status.setStyleSheet("font-size: 10px; color: #A78BFA;")
+        self._pdf_status.setAlignment(Qt.AlignCenter)
+        upload_grid.addWidget(self._pdf_status, 3, 0)
+
+        # ── Separatore "oppure" ──
+        sep_label = QLabel("oppure")
+        sep_label.setAlignment(Qt.AlignCenter)
+        sep_label.setStyleSheet(
+            "font-size: 10px; color: #4A5568; font-style: italic; padding: 0 8px;"
+        )
+        upload_grid.addWidget(sep_label, 1, 1, Qt.AlignCenter)
+
+        # ── COLONNE 2-4: foto singole ──
         self._page_labels = {}
         self._page_previews = {}
         self._page_paths = {}
@@ -119,25 +206,23 @@ class HomePage(QWidget):
             ("page_6", "Pagina 6 (items 86-113)"),
         ]
 
-        for col, (page_key, page_desc) in enumerate(pages):
-            # Label
+        for i, (page_key, page_desc) in enumerate(pages):
+            col = i + 2
+
             lbl = QLabel(page_desc)
             lbl.setStyleSheet("font-size: 11px; color: #94A3B8;")
             upload_grid.addWidget(lbl, 0, col)
 
-            # Preview (drag & drop abilitato)
             preview = _DropZone()
             preview.file_dropped.connect(lambda path, pk=page_key: self._apply_photo(pk, path))
             self._page_previews[page_key] = preview
             upload_grid.addWidget(preview, 1, col)
 
-            # Button
             btn = QPushButton(f"Carica {page_key[-1]}")
             btn.setStyleSheet("padding: 8px 16px;")
             btn.clicked.connect(lambda checked, pk=page_key: self._load_photo(pk))
             upload_grid.addWidget(btn, 2, col)
 
-            # Status
             status = QLabel("")
             status.setStyleSheet("font-size: 10px; color: #4ade80;")
             self._page_labels[page_key] = status
@@ -238,6 +323,24 @@ class HomePage(QWidget):
         layout.addLayout(bottom)
         layout.addStretch()
 
+    def _load_pdf(self):
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Seleziona scansione PDF",
+            "", "PDF (*.pdf)"
+        )
+        if path:
+            self._open_pdf(path)
+
+    def _open_pdf(self, pdf_path: str):
+        from app.widgets.pdf_page_assigner import PdfPageAssigner
+        dialog = PdfPageAssigner(pdf_path, parent=self)
+        if dialog.exec() == PdfPageAssigner.Accepted:
+            image_paths = dialog.get_image_paths()
+            for page_key, img_path in image_paths.items():
+                self._apply_photo(page_key, img_path)
+            self._pdf_status.setText(Path(pdf_path).name)
+            self._pdf_preview.setText("PDF caricato")
+
     def _load_photo(self, page_key: str):
         path, _ = QFileDialog.getOpenFileName(
             self, f"Seleziona foto {page_key}",
@@ -320,11 +423,20 @@ class HomePage(QWidget):
         # Pulisci stato interno
         self._photo_paths.clear()
 
-        # Pulisci preview
+        # Pulisci preview foto
         for page_key, preview in self._page_previews.items():
             preview.clear()
             preview.setText("Trascina foto qui\no clicca Carica")
             preview.setStyleSheet(_DROP_IDLE_STYLE)
+
+        # Pulisci preview PDF
+        self._pdf_preview.clear()
+        self._pdf_preview.setText("Trascina PDF qui\no clicca\nCARICA PDF")
+        self._pdf_preview.setStyleSheet(
+            "background: #1E293B; border: 2px dashed #7C5CFC; "
+            "border-radius: 8px; color: #9B7FFF; font-size: 11px; font-weight: bold;"
+        )
+        self._pdf_status.setText("")
 
         # Pulisci label status
         for lbl in self._page_labels.values():
