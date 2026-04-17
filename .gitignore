@@ -5,9 +5,24 @@ __pycache__/
 *.pyo
 *.egg-info/
 
-# Build artifacts
-smart_ocr/build/
-smart_ocr/dist/
+# Build artifacts (all versions)
+smart_ocr/build*/
+smart_ocr/dist*/
+
+# VPS deployment artifacts
+SMART-OCR-VPS/backup_*/
+SMART-OCR-VPS/backend/*.db
+SMART-OCR-VPS/backend/.env
+SMART-OCR-VPS/frontend/node_modules/
+SMART-OCR-VPS/frontend/dist/
+
+# Test/temp folders
+TEst5/
+test 6/
+A/
+
+# Claude
+.claude/scheduled_tasks.lock
 
 # Data (large/generated)
 smart_ocr/data/raw_cells/

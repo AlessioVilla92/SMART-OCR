@@ -1,0 +1,53 @@
+name: smart_ocr_app
+description: Smart OCR — CBCL 6-18 questionnaire scanner for Android.
+publish_to: 'none'
+version: 6.0.0+1
+
+environment:
+  sdk: '>=3.2.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  # State management
+  flutter_riverpod: ^2.5.0
+  riverpod_annotation: ^2.3.0
+
+  # Networking
+  dio: ^5.4.0
+
+  # Routing
+  go_router: ^14.0.0
+
+  # Secure storage (JWT token)
+  flutter_secure_storage: ^9.2.0
+
+  # Camera & image picker
+  camera: ^0.11.0
+  image_picker: ^1.1.0
+
+  # PDF export
+  pdf: ^3.11.0
+  printing: ^5.13.0
+
+  # File handling
+  path_provider: ^2.1.0
+  archive: ^3.6.0
+
+  # UI helpers
+  cupertino_icons: ^1.0.8
+  intl: ^0.19.0
+  shimmer: ^3.0.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  riverpod_generator: ^2.4.0
+  build_runner: ^2.4.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/
