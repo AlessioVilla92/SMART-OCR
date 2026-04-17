@@ -24,11 +24,19 @@ A/
 # Claude
 .claude/scheduled_tasks.lock
 
+# ML models (large files > 100MB)
+*.pkl
+*.onnx
+*.pt
+*.caffemodel
+
 # Data (large/generated)
 smart_ocr/data/raw_cells/
 smart_ocr/data/synthetic/
 smart_ocr/data/generated/
-smart_ocr/models/*.pkl
+
+# Debug/test output
+test4_debug/
 
 # Images (generated/temp only)
 smart_ocr/data/**/*.png
