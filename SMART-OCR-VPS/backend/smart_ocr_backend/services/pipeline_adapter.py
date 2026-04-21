@@ -44,6 +44,8 @@ def _serialize_report(report: dict, compilatore="MD", sex=None, age=None) -> dic
         "total_score": report.get("total_score", 0),
         "statistics": report.get("statistics", {}),
         "compilatore": report.get("compilatore", compilatore),
+        "child_sex": sex,
+        "child_age": age,
         "method": report.get("_method"),
         "processing_time_ms": report.get("_processing_time_ms"),
     }

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
 import { api } from '../lib/api'
-import { setAnalysisData, setLastJobId } from '../App'
+import { setAnalysisData, setLastJobId, saveProject } from '../App'
 
 const FLAG_EMOJI: Record<string, string> = { '': '✅', ok: '✅', missing: '❌', ambiguous: '⚠️', multiple_marks: '🔴', not_processed: '⬜', low_confidence: '⚠️' }
 const FLAG_CLASS: Record<string, string> = { missing: 'flag-missing', ambiguous: 'flag-ambiguous', multiple_marks: 'flag-multiple' }
@@ -21,18 +21,28 @@ export default function Results() {
 
   useEffect(() => {
     setLastJobId(jobId!)
-    api.jobResults(jobId!).then(d => {
-      setData(d)
-      setAnalysisData(d) // share with form page
-    }).catch(e => {
-      // Try loading from sessionStorage if API fails
-      const saved = sessionStorage.getItem('smartocr_analysis')
-      if (saved) {
-        setData(JSON.parse(saved))
-      } else {
-        alert(e.message)
-      }
-    }).finally(() => setLoading(false))
+    // Check if we have locally edited data (from CbclForm edits) for THIS job
+    const saved = sessionStorage.getItem('smartocr_analysis')
+    const localData = saved ? JSON.parse(saved) : null
+    const localMatchesJob = localData && localData._editedByForm && localData.job_id === jobId
+    if (localMatchesJob) {
+      // Use locally edited data — user has made manual corrections to this job
+      setData(localData)
+      setLoading(false)
+    } else {
+      // No local edits — fetch fresh from API
+      api.jobResults(jobId!).then(d => {
+        const fresh = { ...d, job_id: jobId }
+        setData(fresh)
+        setAnalysisData(fresh) // share with form page
+      }).catch(e => {
+        if (localData) {
+          setData(localData)
+        } else {
+          alert(e.message)
+        }
+      }).finally(() => setLoading(false))
+    }
   }, [jobId])
 
   if (loading) return <div style={{ display: 'flex', justifyContent: 'center', paddingTop: 100 }}><div style={{ width: 32, height: 32, border: '2px solid var(--accent)', borderTopColor: 'transparent', borderRadius: '50%', animation: 'spin 1s linear infinite' }} /></div>
@@ -54,13 +64,17 @@ export default function Results() {
 
   const handleEdit = async (itemId: string, newVal: number) => {
     const updated = { ...items, [itemId]: { ...items[itemId], value: newVal, confidence: 1.0, flag: null } }
-    setData({ ...data, items: updated })
+    const newData = { ...data, items: updated, _editedByForm: true }
+    setData(newData)
+    setAnalysisData(newData) // persist to sessionStorage + sync with form page
     setEditItem(null)
     const vals: Record<string, number> = {}
     for (const [k, v] of Object.entries(updated) as any) { if (v.value != null) vals[k] = v.value }
     try {
-      const r = await api.recompute(vals, undefined, undefined, data.compilatore || 'MD')
-      setData((prev: any) => ({ ...prev, ...r, items: updated }))
+      const r = await api.recompute(vals, data.child_age, data.child_sex, data.compilatore || 'MD')
+      const recomputed = { ...data, ...r, items: updated, _editedByForm: true }
+      setData(recomputed)
+      setAnalysisData(recomputed) // persist recomputed scores
     } catch {}
   }
 
@@ -71,7 +85,7 @@ export default function Results() {
       const res = await fetch('/cbcl/api/v1/export/pdf', {
         method: 'POST',
         headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
+        body: JSON.stringify(Object.fromEntries(Object.entries(data).filter(([k]) => !k.startsWith('_')))),
       })
       if (!res.ok) throw new Error('Errore generazione PDF')
       const blob = await res.blob()
@@ -227,6 +241,13 @@ export default function Results() {
         <>
           <h2 className="h2">Export Risultati</h2>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: 12 }}>
+            {/* Save Project */}
+            <div className="glass" style={{ padding: 20, textAlign: 'center', border: '1px solid var(--accent)' }}>
+              <span style={{ fontSize: 40 }}>💾</span>
+              <h3 className="h3" style={{ marginTop: 8 }}>Salva Progetto</h3>
+              <p style={{ color: 'var(--text-5)', fontSize: '0.8rem', marginBottom: 12 }}>Salva il lavoro con tutte le modifiche manuali. Potrai riaprirlo dopo.</p>
+              <button className="btn btn-primary" onClick={() => saveProject()}>💾 Salva Progetto</button>
+            </div>
             {/* PDF */}
             <div className="glass" style={{ padding: 20, textAlign: 'center' }}>
               <span style={{ fontSize: 40 }}>📑</span>

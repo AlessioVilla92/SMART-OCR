@@ -14,7 +14,7 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
 }
 
 /** Sidebar — identical to Smart OCR desktop */
-function Sidebar({ health, mode, setMode, debug, setDebug, onClose, isOpen }: any) {
+function Sidebar({ health, mode, setMode, debug, setDebug, onClose, isOpen, onForceUpdate }: any) {
   const nav = useNavigate()
   const loc = useLocation()
 
@@ -39,6 +39,25 @@ function Sidebar({ health, mode, setMode, debug, setDebug, onClose, isOpen }: an
         onClick={() => { if (_lastJobId) { nav(`/results/${_lastJobId}`); onClose?.() } }}
         style={!_lastJobId ? { opacity: 0.4 } : {}}>
         📊 Risultati
+      </button>
+
+      <hr className="sep" />
+
+      {/* Save / Load project */}
+      <div className="label" style={{ padding: '0 14px', marginBottom: 8 }}>Progetto</div>
+      <button className="nav-item" onClick={() => { saveProject(); onClose?.() }}
+        style={!_analysisData ? { opacity: 0.4 } : {}}>
+        💾 Salva Progetto
+      </button>
+      <button className="nav-item" onClick={() => {
+        loadProject(() => {
+          onForceUpdate?.()
+          if (_lastJobId) nav(`/results/${_lastJobId}`)
+          else nav('/form')
+          onClose?.()
+        })
+      }}>
+        📂 Apri Progetto
       </button>
 
       <hr className="sep" />
@@ -118,6 +137,63 @@ export function getAnalysisData() { return _analysisData }
 export function setLastJobId(id: string) { _lastJobId = id; sessionStorage.setItem('smartocr_last_job', id) }
 export function getLastJobId() { return _lastJobId }
 
+/** Save project as downloadable .cbcl.json file */
+export function saveProject() {
+  if (!_analysisData) { alert('Nessun dato da salvare'); return }
+  const project = {
+    magic: 'SMARTOCR_CBCL_WEB',
+    version: '1.0',
+    saved_at: new Date().toISOString(),
+    job_id: _lastJobId,
+    compilatore: _analysisData.compilatore || 'MD',
+    child_sex: _analysisData.child_sex,
+    child_age: _analysisData.child_age,
+    method: _analysisData.method,
+    items: _analysisData.items || {},
+    subscale_scores: _analysisData.subscale_scores || {},
+    total_score: _analysisData.total_score || 0,
+    statistics: _analysisData.statistics || {},
+    report_finale: _analysisData.report_finale || {},
+    scoring: _analysisData.scoring || {},
+  }
+  const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' })
+  const name = `CBCL_${project.compilatore}_${_lastJobId || 'progetto'}_${new Date().toISOString().slice(0, 10)}.cbcl.json`
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click()
+}
+
+/** Load project from .cbcl.json file */
+export function loadProject(onLoaded: () => void) {
+  const input = document.createElement('input')
+  input.type = 'file'
+  input.accept = '.json,.cbcl.json'
+  input.onchange = () => {
+    const file = input.files?.[0]
+    if (!file) return
+    const reader = new FileReader()
+    reader.onload = () => {
+      try {
+        const project = JSON.parse(reader.result as string)
+        if (project.magic !== 'SMARTOCR_CBCL_WEB') {
+          alert('File non valido: non e un progetto Smart OCR')
+          return
+        }
+        _analysisData = {
+          ...project,
+          _editedByForm: true, // treat loaded data as edited (don't re-fetch from API)
+        }
+        saveAnalysis(_analysisData)
+        if (project.job_id) {
+          _lastJobId = project.job_id
+          sessionStorage.setItem('smartocr_last_job', project.job_id)
+        }
+        onLoaded()
+      } catch { alert('Errore nel caricamento del file') }
+    }
+    reader.readAsText(file)
+  }
+  input.click()
+}
+
 function BottomTabs({ sidebarOpen, setSidebarOpen }: { sidebarOpen: boolean; setSidebarOpen: (v: boolean) => void }) {
   const nav = useNavigate()
   const loc = useLocation()
@@ -174,7 +250,7 @@ export default function App() {
             {/* Sidebar overlay (mobile) */}
             {sidebarOpen && <div className="sidebar-overlay" onClick={() => setSidebarOpen(false)} />}
             {/* Sidebar — always rendered, visibility controlled by CSS + open class */}
-            <Sidebar health={health} mode={mode} setMode={setMode} debug={debug} setDebug={setDebug} onClose={() => setSidebarOpen(false)} isOpen={sidebarOpen} />
+            <Sidebar health={health} mode={mode} setMode={setMode} debug={debug} setDebug={setDebug} onClose={() => setSidebarOpen(false)} isOpen={sidebarOpen} onForceUpdate={() => forceUpdate(n => n + 1)} />
             {/* Bottom Tab Bar (mobile only) */}
             <BottomTabs sidebarOpen={sidebarOpen} setSidebarOpen={setSidebarOpen} />
 
@@ -188,15 +264,20 @@ export default function App() {
                 <Route path="/form" element={
                   <CbclForm data={_analysisData} onUpdate={(updatedItems) => {
                     if (_analysisData) {
-                      _analysisData = { ..._analysisData, items: updatedItems }
+                      _analysisData = { ..._analysisData, items: updatedItems, _editedByForm: true }
+                      saveAnalysis(_analysisData)
                       forceUpdate(n => n + 1)
-                      // Recompute scores
+                      // Recompute scores with full context
                       const vals: Record<string, number> = {}
                       for (const [k, v] of Object.entries(updatedItems) as any) {
                         if (v.value != null) vals[k] = v.value
                       }
-                      api.recompute(vals).then(r => {
-                        _analysisData = { ..._analysisData, ...r }
+                      const compilatore = _analysisData.compilatore || 'MD'
+                      const age = _analysisData.child_age
+                      const gender = _analysisData.child_sex
+                      api.recompute(vals, age, gender, compilatore).then(r => {
+                        _analysisData = { ..._analysisData, ...r, items: updatedItems, _editedByForm: true }
+                        saveAnalysis(_analysisData)
                         forceUpdate(n => n + 1)
                       }).catch(() => {})
                     }
