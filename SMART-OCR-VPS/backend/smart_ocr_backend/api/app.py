@@ -27,7 +27,7 @@ async def lifespan(app: FastAPI):
 def create_app() -> FastAPI:
     app = FastAPI(
         title="Smart OCR API",
-        version="6.0.0",
+        version="6.1.0",
         description="REST API per analisi OCR questionari CBCL 6-18",
         lifespan=lifespan,
         docs_url="/api/docs",

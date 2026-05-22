@@ -34,7 +34,7 @@ def health_check():
 
     return {
         "status": "ok",
-        "version": "6.0.0",
+        "version": "6.1.0",
         "models": {
             "svm": svm_available,
             "yolo_onnx": yolo_available,
